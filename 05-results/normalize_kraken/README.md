@@ -42,4 +42,4 @@ This folder contains all results generated in the NPost normalization tract.
 - `dsvss_norm_kraken_oral_unmerged_duplicated_reads.tsv`: Summary table showing how many unique oral unmerged reads are present at each level of duplication per library
 
 ### Nonpareil
-- `nonpareil`: Folder of Nonpareil
+- `nonpareil`: Folder of Nonpareil output files
