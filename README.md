@@ -10,7 +10,7 @@ Keri Burge, Irina M. Velsko, Domingo Salazar-Garcia, & Christina Warinner
 
 ### Overview
 Folders:
--`00-documentation`: Documentation and metadata tables for samples
--`02-scripts`: Workflows and scripts 
--`05-results`: Results generated in the project
--`06-publication`: Main and supplemental figures
+- `00-documentation`: Documentation and metadata tables for samples
+- `02-scripts`: Workflows and scripts 
+- `05-results`: Results generated in the project
+- `06-publication`: Main and supplemental figures
