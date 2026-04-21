@@ -1,0 +1,41 @@
+# table produced by mapDamage version 2.2.3
+# using mapped file /mnt/archgen/microbiome_calculus/library_ds_vs_ss/04-analysis/normalize_kraken/mapping/neisseria_elongata/out/BAN001.A0101.SG1.1_5M.mapped_n_elongata_q25l30_rmdup.bam and /mnt/archgen/microbiome_calculus/library_ds_vs_ss/04-analysis/normalize_kraken/mapping/neisseria_elongata/input/GCF_900453895.1_42925_E01_genomic.fna as reference file
+# Std: strand of reads
+Std	Length	Occurences 
++	42	3
++	35	3
++	51	1
++	32	3
++	58	1
++	76	1
++	38	2
++	33	2
++	43	1
++	45	1
++	46	2
++	54	1
++	31	3
++	52	1
++	36	1
++	30	2
++	40	1
++	37	1
++	39	1
++	53	2
+-	63	1
+-	48	1
+-	36	1
+-	39	2
+-	43	1
+-	38	2
+-	42	1
+-	30	2
+-	37	1
+-	35	2
+-	33	1
+-	31	1
+-	51	1
+-	40	1
+-	82	1
+-	96	1
+-	52	1

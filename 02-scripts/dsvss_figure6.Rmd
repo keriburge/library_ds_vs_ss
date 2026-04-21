@@ -1,0 +1,716 @@
+---
+title: "Figure 6"
+author: "Keri Burge"
+date: "`r format(Sys.time(), '%b %d, %Y')`"
+output:
+    github_document:
+        fig_width: 8
+        fig_height: 6
+        toc: true
+---
+
+
+```{r, eval=TRUE, echo=FALSE, message=FALSE}
+#Load in all necessary packages
+library(knitr)
+library(data.table)
+library(ggplot2)
+library(viridis)
+library(rstatix)
+library(mixOmics)
+library(janitor)
+library(dplyr)
+library(vegan)
+library(ggrepel)
+library(ggpubr)
+library(tidyverse)
+
+```
+
+
+```{r setup}
+knitr::opts_knit$set(root.dir = normalizePath(".."))
+```
+
+
+# Colors
+```{r, colors}
+double_color <- "#04387a"
+single_color <- "#6fbfdc"
+  
+```
+
+
+#Well-preserved oral PCA -> What species are driving both PC1 and PC2 in the negative and positive direction?
+```{r}
+#Fill in data for total oral species v. filtered oral species w/ no contam
+kraken2_oral_species_no_rl <- fread("./05-results/normalize_kraken/dsvss_npost_kraken2_gtdb207_oral_species_decontam_filtered.tsv", header = TRUE) 
+
+data <- kraken2_oral_species_no_rl #select the oral set to use
+
+metadata <- fread("./05-results/normalize_kraken/dsvss_npost_w_rl_subsampling_metadata.tsv") 
+
+metadata_no_rl <- metadata %>%
+  filter(Read_length_subsampling == "none")
+```
+
+
+```{r}
+#Filter out the poorly preserved samples (BAN001 and FUM003)
+kraken2_oral_species_no_rl_filtered <- data %>%
+  pivot_longer(!Species, names_to = "Sequencing_ID", values_to = "Counts") %>%
+  filter(!str_detect(Sequencing_ID, "BAN001")) %>%
+  filter(!str_detect(Sequencing_ID, "FUM003")) %>%
+  mutate(Counts = Counts + 1) %>%
+  pivot_wider(names_from = "Species", values_from = "Counts") %>%
+  filter(!str_detect(Sequencing_ID, "Isolation_Source")) %>%
+  column_to_rownames("Sequencing_ID")
+  
+result.pca.kraken2_no_rl_filtered <- pca(kraken2_oral_species_no_rl_filtered, logratio = "CLR") 
+
+exp_var <- paste0(round(result.pca.kraken2_no_rl_filtered$prop_expl_var$X * 100, 2), "%") # explained variance for x- and y-labels
+
+pca_kraken2_no_rl_filtered <- result.pca.kraken2_no_rl_filtered$variates %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  dplyr::rename(Sequencing_ID = 1,
+         PC1 = 2,
+         PC2 = 3) %>%
+  inner_join(., metadata_no_rl, by = "Sequencing_ID")
+
+
+```
+
+Perform a PERMANOVA (Permutational Multivariate Analysis of Variance) test using the adonis2 function from the vegan package
+```{r}
+#Create a metadata file with sample IDs, grouping info, and PCA scores
+permanova_data_no_rl_filtered <- pca_kraken2_no_rl_filtered %>%
+  dplyr::select(Sequencing_ID, Individual_ID, PC1, PC2, Strandedness, kraken2_preservation) %>%
+  column_to_rownames("Sequencing_ID")
+
+#Create a distance matrix of just PCA scores
+permanova_dist_matrix_no_rl_filtered <- dist(permanova_data_no_rl_filtered[, c("PC1", "PC2")], method = "euclidean")
+
+#Run adonis2
+adonis_result <- adonis2(permanova_dist_matrix_no_rl_filtered ~ Strandedness, data = permanova_data_no_rl_filtered) #Strandedness, Individual_ID
+
+r_squared_value <- adonis_result$R2[1] 
+  
+p_value <- adonis_result$`Pr(>F)`[1]
+
+p_value_formatted <- ifelse(p_value < 0.001, "< 0.001",
+                            as.character(signif(p_value, digits = 2)))
+
+r_squared_value_formatted <- ifelse(r_squared_value < 0.001, "< 0.001",
+                            as.character(signif(r_squared_value, digits = 2)))
+```
+
+
+```{r}
+#keep color for strandedness, and change shape for preservation 
+color <- c(double_color, single_color)
+
+kraken2_pca_strandedness_no_rl_filtered <- pca_kraken2_no_rl_filtered %>%
+  mutate(kraken2_preservation = factor(kraken2_preservation, levels = c("Good", "Bad"))) %>%
+  ggplot(., aes(x = PC1, y = PC2, color = Strandedness)) +
+    geom_point(aes(shape = kraken2_preservation), size = 4) +
+    theme_minimal() +
+    labs(title = "", y = paste("PC2", " - ", exp_var[2]), x = paste("PC1", " - ", exp_var[1])) +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    scale_color_discrete(name = "Strandedness", labels = c("Double", "Single")) +
+    scale_shape_discrete(name = "Preservation") +
+    geom_line(aes(group = Individual_ID), color = "#555555ff", linetype = "dashed") +
+    #scale_colour_manual(name = "Strandedness", values = c("Double" = after_scale(lighten("#4059AD", .2)), "Single" = after_scale(lighten("#5fc3a4", .2)))) +
+    #scale_color_manual(name = "Strandedness", values = c("Double" = "#098BD9", "Single" = "#7DCCFF")) +
+    scale_color_manual(name = "Strandedness", values = color) +
+    theme(axis.text.x = element_text(size = 12),  
+          axis.text.y = element_text(size = 12),
+          strip.text = element_text(size = 12),
+          legend.text = element_text(size = 12),
+          legend.title = element_text(size = 12),
+          axis.title.x = element_text(size = 12),
+          axis.title.y = element_text(size = 12),
+          legend.position = "bottom") +
+    geom_text_repel(data = subset(pca_kraken2_no_rl_filtered, Strandedness == "Double"), 
+                        aes(label = Individual_ID), 
+                        size = 3, color = "black", segment.color = NA) +
+      coord_equal()
++
+  annotate("text", x = -14, y = 15,
+           label = paste("R2 =", r_squared_value_formatted,
+                         "\np-value =", p_value_formatted)) 
+ 
+kraken2_pca_strandedness_no_rl_filtered
+
+```
+
+#Figure 6A-B: Pull the reads and read lengths of just those species of interest (those driving the PCs)
+```{r}
+kraken2_oral_species_no_rl_filtered <- data %>%
+  pivot_longer(!Species, names_to = "Sequencing_ID", values_to = "Counts") %>%
+  filter(!str_detect(Sequencing_ID, "BAN001")) %>%
+  filter(!str_detect(Sequencing_ID, "FUM003")) %>%
+  mutate(Counts = Counts + 1) %>%
+  pivot_wider(names_from = "Species", values_from = "Counts") %>%
+  filter(!str_detect(Sequencing_ID, "Isolation_Source")) %>%
+  column_to_rownames("Sequencing_ID")
+
+#Create PCA using mixomics package
+result.pca.kraken2_no_rl_filtered <- pca(kraken2_oral_species_no_rl_filtered, ncomp = 2, logratio = "CLR") 
+
+#Metadata table (will be added w/in the function)
+full_metadata <- fread("./05-results/normalize_kraken/dsvss_npost_w_rl_subsampling_metadata.tsv") %>%
+  filter(Read_length_subsampling == "none") %>%
+  dplyr::select(Sequencing_ID, Strandedness, kraken2_preservation, Individual_ID)
+
+#Define colors and shapes for plotting
+Strandedness_colors <- c("Double" = double_color, "Single" = single_color)
+kraken2_preservation_shapes <- c("Good" = 16, "Bad" = 17)
+
+#Biplot Function
+plot_pca_bi <- function(df, pc1, pc2, metadata_group1, metadata_group2, columntitle) {
+    metadata_group_colors <- get(paste(metadata_group1, "_colors", sep = ""))
+    metadata_group_shapes <- get(paste(metadata_group2, "_shapes", sep = ""))
+   
+    arrow_pc <- enquo(columntitle)
+    
+    exp_var <- paste0(round(df$prop_expl_var$X * 100, 2), "%") # explained variance for x- and y-labels
+    
+    # select only the PCs from the PCA and add metadata
+    df_X <- df$variates$X %>%
+              as.data.frame() %>%
+              rownames_to_column("Sequencing_ID") %>%
+              inner_join(full_metadata, by = "Sequencing_ID")
+    
+    metadata_group1 = df_X[[metadata_group1]]
+    metadata_group2 = df_X[[metadata_group2]]
+    
+    corr_lam <- df$sdev[c("PC1", "PC2")] * sqrt(nrow(df_X))
+
+    df_X <- df_X %>%
+      mutate(PC1 = PC1 / corr_lam[1],
+             PC2 = PC2 / corr_lam[2])
+
+    # select the correct PC column and explained variance for PC1
+    if (pc1 == 'PC1') {
+        Pc1 <- df_X$PC1
+        exp_var_pc1 <- exp_var[1]
+        xaxis <- c("PC1")
+    } else if (pc1 == 'PC2') {
+        Pc1 <- df_X$PC2
+        exp_var_pc1 <- exp_var[2]
+        xaxis <- c("PC2")
+    } 
+    
+    # select the correct PC column and explained variance for PC2
+    if (pc2 == 'PC1') {
+        Pc2 <- df_X$PC1
+        exp_var_pc2 <- exp_var[1]
+        yaxis <- c("PC1")
+ } else if (pc2 == 'PC2') {
+       Pc2 <- df_X$PC2
+       exp_var_pc2 <- exp_var[2]
+       yaxis <- c("PC2")
+    }
+    
+    # Identify the 10 pathways that have highest positive and negative loadings in the selected PC
+    pws_10 <- df$loadings$X %>%
+      as.data.frame(.) %>%
+      rownames_to_column(var = "Taxon") %>%
+      top_n(10, !!arrow_pc) %>%
+      arrange(desc(!!arrow_pc)) %>%   #sort by size of loading to get strongest first
+      mutate(label = row_number())
+
+    neg_10 <- df$loadings$X %>%
+      as.data.frame(.) %>%
+      rownames_to_column(var = "Taxon") %>%
+      top_n(-10, !!arrow_pc) %>%
+      arrange(!!arrow_pc) %>%  #sort to get the smallest (most negative/strongest) first
+      mutate(label = row_number())
+
+    pca_plot_bi <- df_X %>%
+      mutate(metadata_group2 = factor(metadata_group2, levels = c("Good", "Bad"))) %>%
+      ggplot(., aes(x = Pc1, y = Pc2, color = metadata_group1)) +
+      geom_point(size = 4, aes(shape = metadata_group2) )+
+      geom_segment(data = pws_10,
+                   aes(xend = get(paste(pc1)), yend = get(paste(pc2))),
+                   x = 0, y = 0, colour = "black",
+                   size = 0.3,
+                   arrow = arrow(length = unit(0.03, "npc"))) +
+      geom_segment(data = neg_10,
+                   aes(xend = get(paste(pc1)), yend = get(paste(pc2))),
+                   x = 0, y = 0, colour = "grey",
+                   size = 0.3,
+                   arrow = arrow(length = unit(0.03, "npc"))) +
+      labs(x = paste(xaxis, " - ", exp_var_pc1),
+           y = paste(yaxis, " - ", exp_var_pc2),
+           color = "Strandedness",
+           shape = "Preservation") +
+      scale_color_manual(values = metadata_group_colors) +
+      scale_shape_manual(values = metadata_group_shapes) +
+      theme_minimal() + theme(text = element_text(size = 16)) +
+      theme(text = element_text(size=16)) +
+      theme(legend.position = "bottom") +
+      geom_line(aes(group = Individual_ID), color = "#CCCCCC", linetype = "dashed") +
+      geom_text_repel(aes(label = Individual_ID), color = "black", segment.color = NA) +
+      coord_equal()
+      
+
+    return(pca_plot_bi) #REPLACE HERE FOR DIFFERENT OUTPUTS: pca_plot_bi, pws_10, neg_10
+}
+
+#To generate the PCA biplot with loading arrows, run return(pca_plot_bi)
+#To generate a table of the top 10 positive PC1 and PC2 loadings, run return(pws_10)
+#To generate a table of the top 10 negative PC1 and PC2 loadings, run return(neg_10)
+
+#PC1
+pca_kraken2_biplot_PC1_filtered <- plot_pca_bi(result.pca.kraken2_no_rl_filtered, "PC1", "PC2", "Strandedness", "kraken2_preservation", PC1)
+
+#PC2
+pca_kraken2_biplot_PC2_filtered <- plot_pca_bi(result.pca.kraken2_no_rl_filtered, "PC1", "PC2", "Strandedness", "kraken2_preservation", PC2)
+
+pca_kraken2_biplot_PC1_filtered
+pca_kraken2_biplot_PC2_filtered
+
+#Combine the biplots
+oral_pca_biplots_combined_no_rl_filtered <- ggarrange(
+  pca_kraken2_biplot_PC1_filtered, pca_kraken2_biplot_PC2_filtered, 
+  labels = c("A", "B"), 
+  ncol = 1, nrow = 2, 
+  common.legend = TRUE, 
+  legend = "bottom")
+
+oral_pca_biplots_combined_no_rl_filtered
+
+#ggsave("./06_publication/main_figures/Figure6AB_npost_no_rl_subsampling_pca_oral_species_biplot_well_preserved_samples.pdf", plot = oral_pca_biplots_combined_no_rl_filtered, device = "pdf", scale = 1, width = 8, height = 12, units = c("in"), dpi = 300)
+```
+
+
+Species of interest
+These are the top ten species driving each PC
+```{r}
+pos_PC1 <- c("Mesocricetibacter sp905373425", "Aggregatibacter kilianii", "Aggregatibacter aphrophilus", "Neisseria elongata", "Lautropia mirabilis", "Neisseria sicca", "Fusobacterium hwasookii", "JABCPE02 sp013333875", "JABCPE02 sp013333255", "Aggregatibacter segnis")
+
+pos_PC2 <- c("Actinomyces sp900323545", "Corynebacterium durum", "Methanobrevibacter A oralis", "Actinomyces howellii", "Actinomyces sp000195595", "Actinomyces oricola", "Actinomyces viscosus", "Actinomyces slackii", "Mogibacterium diversum", "Actinomyces oris")
+
+neg_PC1 <- c("Olsenella uli", "Slackia exigua", "Olsenella F profusa", "Flexilinea sp001717545", "Olsenella F sp001189515", "Actinomyces dentalis", "Actinomyces sp001278845", "Nanosynbacter sp905373795", "Saccharimonas sp018127705", "Nanosynbacter sp905372305")
+
+neg_PC2 <- c("Phocaeicola abscessus", "Bacteroides heparinolyticus", "Desulfovibrio sp003860215", "Centipeda periodontii", "Ottowia sp001262075", "Centipeda sp001717585", "Centipeda sp905372865", "Pyramidobacter piscolens", "Prevotella maculosa", "Leptotrichia buccalis")
+```
+
+
+Isolate the taxIDs of the species of interest so you can pull just those reads along with each read's length (in separate bash script)
+```{r}
+species_of_interest <- c(pos_PC1, pos_PC2, neg_PC1, neg_PC2)
+
+species_taxids <- fread("./05-results/normalize_kraken/kraken2_names.dmp",
+               sep = "\t"
+                 ) %>%
+  dplyr::select(V1, V3) %>%
+  rename(parentID = V1,
+         taxonomy = V3) %>%
+  mutate(taxonomy = str_replace_all(taxonomy, "_", " ")) 
+
+
+strain_taxids <- fread("./05-results/normalize_kraken/kraken2_nodes.dmp",
+               sep = "\t"
+                 ) %>%
+  dplyr::select(V1, V3) %>%
+  rename(taxid = V1,
+         parentID = V3) %>%
+  inner_join(., species_taxids, by = "parentID") %>%
+  mutate(taxonomy = str_replace(taxonomy, " (?:[A-Z]+)$", "")) %>%
+  filter(taxonomy %in% species_of_interest)
+
+#fwrite(strain_taxids, "./05-results/normalize_kraken/dsvss_npost_oral_PCs_taxIDs.tsv", sep = "\t")
+
+```
+
+
+Find the average read length for the species dominating the PCs in both dsLibs and ssLibs
+```{r}
+pos_PC1 <- c("Mesocricetibacter sp905373425", "Aggregatibacter kilianii", "Aggregatibacter aphrophilus", "Neisseria elongata", "Lautropia mirabilis", "Neisseria sicca", "Fusobacterium hwasookii", "JABCPE02 sp013333875", "JABCPE02 sp013333255", "Aggregatibacter segnis")
+
+pos_PC2 <- c("Actinomyces sp900323545", "Corynebacterium durum", "Methanobrevibacter A oralis", "Actinomyces howellii", "Actinomyces sp000195595", "Actinomyces oricola", "Actinomyces viscosus", "Actinomyces slackii", "Mogibacterium diversum", "Actinomyces oris")
+
+neg_PC1 <- c("Olsenella uli", "Slackia exigua", "Olsenella F profusa", "Flexilinea sp001717545", "Olsenella F sp001189515", "Actinomyces dentalis", "Actinomyces sp001278845", "Nanosynbacter sp905373795", "Saccharimonas sp018127705", "Nanosynbacter sp905372305")
+
+neg_PC2 <- c("Phocaeicola abscessus", "Bacteroides heparinolyticus", "Desulfovibrio sp003860215", "Centipeda periodontii", "Ottowia sp001262075", "Centipeda sp001717585", "Centipeda sp905372865", "Pyramidobacter piscolens", "Prevotella maculosa", "Leptotrichia buccalis")
+
+taxIDs <- fread("./05-results/normalize_kraken/dsvss_npost_oral_PCs_taxIDs.tsv")
+```
+
+
+```{r}
+files <- list.files(path = "./05-results/normalize_kraken/oral_well_preserved_PCs", pattern = ".oral_well_preserved_PCs.tsv", full.names = T)
+
+gc_rl_oral_PCs_table <- function(files) {
+  oral_gc_rl <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(read_header = 1,
+          taxid = 2,
+          read_length = 3,
+          GC = 4) %>%
+    left_join(., taxIDs %>%
+              dplyr::select(taxid, taxonomy)) %>%
+    mutate(Sequencing_ID = basename(fn)) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".oral_well_preserved_PCs.tsv", "")) %>%
+    inner_join(., metadata_no_rl %>%
+              dplyr::select(Sequencing_ID, Strandedness)) 
+  })
+  
+  oral_gc_rl_df <- do.call(rbind, oral_gc_rl) 
+  oral_gc_rl_df <- oral_gc_rl_df %>%
+    filter(!str_detect(Sequencing_ID, "BAN001")) %>%
+    filter(!str_detect(Sequencing_ID, "FUM003")) 
+  
+  return(oral_gc_rl_df)
+}
+
+
+oral_pcs_gc_rl <- gc_rl_oral_PCs_table(files)
+```
+
+
+```{r}
+#group by taxonomy and strandedness to calculate average read length and %GC for each library type
+##Read length
+read_length_avs <- oral_pcs_gc_rl %>%
+  group_by(taxonomy, Sequencing_ID) %>%
+  mutate(av_rl_sample = mean(read_length)) %>%
+  ungroup() %>%
+  dplyr::select(taxonomy, Sequencing_ID, Strandedness, av_rl_sample) %>%
+  unique() %>%
+  group_by(taxonomy, Strandedness) %>%
+  mutate(av_rl = mean(av_rl_sample)) %>% #average just based on those who have the species present 
+  dplyr::select(taxonomy, Strandedness, av_rl) %>%
+  unique() %>%
+  filter(taxonomy %in% pos_PC1) %>% #fill in PC of interest
+  mutate(taxonomy = factor(taxonomy, levels = pos_PC1)) %>% #fill in PC of interest
+  arrange(taxonomy) %>%
+  mutate(av_rl = round(av_rl, 1))
+
+##GC
+GC_avs <- oral_pcs_gc_rl %>%
+  group_by(taxonomy, Sequencing_ID) %>%
+  mutate(av_gc_sample = mean(GC)) %>% 
+  ungroup() %>%
+  dplyr::select(taxonomy, Sequencing_ID, Strandedness, av_gc_sample) %>%
+  unique() %>%
+  group_by(taxonomy, Strandedness) %>%
+  mutate(av_gc = mean(av_gc_sample)) %>%
+  dplyr::select(taxonomy, Strandedness, av_gc) %>%
+  unique() %>%
+  filter(taxonomy %in% pos_PC1) %>% #fill in PC of interest
+  mutate(taxonomy = factor(taxonomy, levels = pos_PC1)) %>% #fill in PC of interest
+  arrange(taxonomy) %>%
+  mutate(av_gc = round(av_gc, 1))
+
+#Average number of reads
+av_read_count <- oral_pcs_gc_rl %>%
+  group_by(taxonomy, Sequencing_ID) %>%
+  mutate(read_count = n()) %>%
+  ungroup() %>%
+  dplyr::select(taxonomy, Sequencing_ID, Strandedness, read_count) %>%
+  unique() %>%
+  group_by(taxonomy, Strandedness) %>%
+  mutate(av_read_count = mean(read_count)) %>%
+  dplyr::select(taxonomy, Strandedness, av_read_count) %>%
+  unique() %>%
+  filter(taxonomy %in% pos_PC1) %>% #fill in PC of interest
+  mutate(taxonomy = factor(taxonomy, levels = pos_PC1)) %>% #fill in PC of interest
+  arrange(taxonomy) %>%
+  mutate(av_read_count = round(av_read_count, 0))
+  
+  group_by(taxonomy, Strandedness) %>%
+  mutate(read_count = n()) %>%
+  ungroup() %>%
+  dplyr::select(taxonomy, Strandedness, read_count) %>%
+  unique() %>%
+  mutate(av_read_count = read_count/8) %>%
+  filter(taxonomy %in% pos_PC1) #fill in PC of interest
+```
+
+
+# Focus on read length distributions of specific species (C-E)
+## Prepare the read length tables
+```{r}
+files <- list.files(path = "./05-results/normalize_kraken/oral_well_preserved_PCs", pattern = ".oral_well_preserved_PCs.tsv", full.names = T)
+
+taxIDs <- fread("./05-results/normalize_kraken/dsvss_npost_oral_PCs_taxIDs.tsv")
+
+rl_oral_PCs_table <- function(files) {
+  oral_gc_rl <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(read_header = 1,
+          taxid = 2,
+          read_length = 3,
+          GC = 4) %>%
+    left_join(., taxIDs %>%
+              dplyr::select(taxid, taxonomy)) %>%
+    select(-read_header, -taxid, -GC) %>%
+    group_by(taxonomy, read_length) %>%
+    summarise(counts = n()) %>%
+    mutate(Sequencing_ID = basename(fn)) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".oral_well_preserved_PCs.tsv", "")) %>%
+    inner_join(., metadata_no_rl %>%
+              dplyr::select(Sequencing_ID, Strandedness)) 
+  })
+  
+  oral_gc_rl_df <- do.call(rbind, oral_gc_rl) 
+  oral_gc_rl_df <- oral_gc_rl_df %>%
+    filter(!str_detect(Sequencing_ID, "BAN001")) %>%
+    filter(!str_detect(Sequencing_ID, "FUM003")) 
+  
+  return(oral_gc_rl_df)
+}
+
+
+oral_pcs_rl <- rl_oral_PCs_table(files)
+
+gc_categories <- fread("./05-results/normalize_kraken/dsvss_npost_oral_pc_species_gc_categories.csv")
+
+oral_pcs_rl <- oral_pcs_rl %>%
+  full_join(., gc_categories, by = "taxonomy")
+```
+
+## Calculate the median read length for each library
+```{r}
+#function to calculate the median read length of oral reads per libraryID
+median_rl_summary_table <- function(sample_list, oral_reads_length_table) {
+  
+  #Create a blank dataframe
+  read_length_summary_table <- data.frame(Individual_ID = sample_list,
+                                          Double = numeric(length(sample_list)),
+                                          Single = numeric(length(sample_list)),
+                                          stringsAsFactors = FALSE)
+  
+  #Function to calculate median read length based on dataset, sample, and strandedness
+  calculate_median_rl <- function(data, sample, strandedness) {
+    rl_summary <- data %>%
+      dplyr::select(Library_ID, Individual_ID, Strandedness, read_length, counts) %>%
+      mutate(read_length = as.integer(as.character(read_length))) %>%
+      filter(Individual_ID == sample, Strandedness == strandedness) %>%
+      uncount(counts) %>%
+      mutate(read_length = as.integer(read_length)) %>%
+      summarize(median_rl = median(read_length))
+    
+    return(rl_summary$median_rl)
+  }
+  
+  
+  for (sample in sample_list) {
+    #adapter removal
+    rl_value_of_median_ds <- calculate_median_rl(oral_reads_length_table, sample, "Double")
+    rl_value_of_median_ss <- calculate_median_rl(oral_reads_length_table, sample, "Single")
+    read_length_summary_table[read_length_summary_table$Individual_ID == sample, "Double"] <- rl_value_of_median_ds
+    read_length_summary_table[read_length_summary_table$Individual_ID == sample, "Single"] <- rl_value_of_median_ss
+    
+   }
+
+  return(read_length_summary_table)
+  
+}
+
+samples <- metadata_no_rl %>%
+  dplyr::select(Individual_ID) %>%
+  unique() %>%
+  pull()
+
+```
+
+
+## Figure 6C: Aggregatibacter kilianii -> low GC content (43)
+```{r}
+a_kilianii_table <- oral_pcs_rl %>%
+  ungroup() %>%
+  filter(taxonomy == "Aggregatibacter kilianii") %>%
+  full_join(., metadata_no_rl %>%
+              select(Sequencing_ID, Library_ID, Individual_ID)) %>%
+  select(-taxonomy)
+
+
+median_rl_a_kilianii <- median_rl_summary_table(samples, a_kilianii_table) %>%
+  pivot_longer(-Individual_ID, values_to = "median_rl", names_to = "Strandedness")
+
+```
+
+GOY005
+```{r}
+read_length_table <- a_kilianii_table %>%
+  filter(Individual_ID == "GOY005") 
+
+median_rl_info <- median_rl_a_kilianii %>%
+  filter(Individual_ID == "GOY005") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 800)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/main_figures/Figure6C_npost_a_kilianii_GOY005_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+## Figure 6D: Neisseria elongata -> mid GC content (54)
+```{r}
+n_elongata_table <- oral_pcs_rl %>%
+  ungroup() %>%
+  filter(taxonomy == "Neisseria elongata") %>%
+  full_join(., metadata_no_rl %>%
+              select(Sequencing_ID, Library_ID, Individual_ID)) %>%
+  select(-taxonomy)
+
+median_rl_n_elongata <- median_rl_summary_table(samples, n_elongata_table) %>%
+  pivot_longer(-Individual_ID, values_to = "median_rl", names_to = "Strandedness")
+```
+
+GOY005
+```{r}
+read_length_table <- n_elongata_table %>%
+  filter(Individual_ID == "GOY005") 
+
+median_rl_info <- median_rl_n_elongata %>%
+  filter(Individual_ID == "GOY005") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 200)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/main_figures/Figure6D_npost_n_elongata_GOY005_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+
+## Figure 6E: Lautropia mirabilis -> high GC content (65.5)
+```{r}
+l_mirabilis_table <- oral_pcs_rl %>%
+  ungroup() %>%
+  filter(taxonomy == "Lautropia mirabilis") %>%
+  full_join(., metadata_no_rl %>%
+              select(Sequencing_ID, Library_ID, Individual_ID)) %>%
+  select(-taxonomy)
+
+median_rl_l_mirabilis <- median_rl_summary_table(samples, l_mirabilis_table) %>%
+  pivot_longer(-Individual_ID, values_to = "median_rl", names_to = "Strandedness")
+
+```
+
+GOY005  
+```{r}
+read_length_table <- l_mirabilis_table %>%
+  filter(Individual_ID == "GOY005") 
+
+median_rl_info <- median_rl_l_mirabilis %>%
+  filter(Individual_ID == "GOY005") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+     theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 1500)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/main_figures/Figure6E_npost_l_mirabilis_GOY005_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+#Distributions for all other samples along with associated damage plots can be found in the script `02-scripts/dsvss_norm_kraken_species_specific_rl_damage.Rmd'.

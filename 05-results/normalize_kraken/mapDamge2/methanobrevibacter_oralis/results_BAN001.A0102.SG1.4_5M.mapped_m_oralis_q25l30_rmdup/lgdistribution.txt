@@ -1,0 +1,16 @@
+# table produced by mapDamage version 2.2.3
+# using mapped file /mnt/archgen/microbiome_calculus/library_ds_vs_ss/04-analysis/normalize_kraken/mapping/methanobrevibacter_oralis/mapDamage2_ssLibs/input/BAN001.A0102.SG1.4_5M.mapped_m_oralis_q25l30_rmdup.bam and /mnt/archgen/microbiome_calculus/library_ds_vs_ss/04-analysis/normalize_kraken/mapping/methanobrevibacter_oralis/input/GCA_001639275.1_ASM163927v1_genomic.fna as reference file
+# Std: strand of reads
+Std	Length	Occurences 
++	30	5
++	29	3
++	34	1
++	31	3
++	32	2
++	40	1
++	28	1
+-	30	4
+-	29	2
+-	36	1
+-	35	1
+-	31	1

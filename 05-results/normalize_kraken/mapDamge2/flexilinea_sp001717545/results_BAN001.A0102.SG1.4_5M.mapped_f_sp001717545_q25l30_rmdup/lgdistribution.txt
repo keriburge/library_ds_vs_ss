@@ -1,0 +1,13 @@
+# table produced by mapDamage version 2.2.3
+# using mapped file /mnt/archgen/microbiome_calculus/library_ds_vs_ss/04-analysis/normalize_kraken/mapping/flexilinea_sp001717545/mapDamage2_ssLibs/input/BAN001.A0102.SG1.4_5M.mapped_f_sp001717545_q25l30_rmdup.bam and /mnt/archgen/microbiome_calculus/library_ds_vs_ss/04-analysis/normalize_kraken/mapping/flexilinea_sp001717545/input/GCA_001717545.1_ASM171754v1_genomic.fna as reference file
+# Std: strand of reads
+Std	Length	Occurences 
++	30	2
++	33	1
++	35	2
++	31	1
+-	36	2
+-	30	3
+-	29	2
+-	33	2
+-	42	1

@@ -1,0 +1,977 @@
+---
+title: "Figure 3"
+author: "Keri Burge"
+date: "`r format(Sys.time(), '%b %d, %Y')`"
+output:
+    github_document:
+        fig_width: 8
+        fig_height: 6
+        toc: true
+---
+
+```{r, eval=TRUE, echo=FALSE, message=FALSE}
+#Read in the neccessary libraries
+library(knitr)
+library(ggplot2)
+library(data.table)
+library(viridis)
+library(ggpubr) #has ggarange function
+library(janitor)
+library(rstatix)
+library(ggrepel)
+library(tidyverse)
+
+```
+
+
+```{r setup}
+knitr::opts_knit$set(root.dir = normalizePath(".."))
+```
+
+
+# Colors
+```{r, colors}
+double_color <- "#04387a"
+single_color <- "#6fbfdc"
+  
+```
+
+
+# Metadata
+```{r, metadata}
+#Library info
+metadata <- fread("./05-results/normalize_eager/dsvss_npre_w_rl_subsampling_metadata.tsv") %>%
+  filter(!str_detect(Sequencing_ID, "bp")) %>%
+  mutate(Sequencing_ID = str_replace(Sequencing_ID, "_10M", ""))
+
+#Read counts throughout eager
+read_counts <- fread("./05-results/normalize_eager/dsvss_npre_eager_read_counts.tsv")
+
+#Combine tables
+metadata <- metadata %>%
+  full_join(., read_counts, by = c("Sequencing_ID", "Strandedness"))
+
+
+```
+
+
+#A: Median read length before and after processing via nf-core/eager (adapter removal, remove reads <30bp, remove sequencing and lab artifacts, cutadapt)
+```{r}
+#function to find median read length throughout process 
+median_rl_summary_table <- function(metadata, sample_list, adapter_removal_data, remove_less_30_data, samtools_data, cutadapt_data) {
+  
+  #Create a blank data frame with each column of interest
+  read_length_summary_table <- data.frame(Sample = sample_list,
+                                          adapter_ds = numeric(length(sample_list)),
+                                          adapter_ss = numeric(length(sample_list)),
+                                          remove_less_30_ds = numeric(length(sample_list)),
+                                          remove_less_30_ss = numeric(length(sample_list)),
+                                          artifact_removal_ds = numeric(length(sample_list)),
+                                          artifact_removal_ss = numeric(length(sample_list)),
+                                          cutadapt_ds = numeric(length(sample_list)),
+                                          cutadapt_ss = numeric(length(sample_list)),
+                                          stringsAsFactors = FALSE)
+  
+  #Function to calculate median read length based on dataset, sample, and strandedness
+  calculate_median_rl <- function(data, sample, strandedness) {
+    rl_summary <- metadata %>%
+      full_join(., data, by = "Library_ID") %>%
+      dplyr::select(Library_ID, Individual_ID, Strandedness, Length, counts) %>%
+      mutate(Length = as.integer(as.character(Length))) %>%
+      filter(Individual_ID == sample, Strandedness == strandedness) %>%
+      uncount(counts) %>%
+      mutate(Length = as.integer(Length)) %>%
+      summarize(median_rl = median(Length)) 
+    
+      return(rl_summary$median_rl)
+    
+    #total_counts <- sum(rl_summary$counts)
+    #median_row <- rl_summary[which.min(abs(rl_summary$cumulative_counts - total_counts / 2)), ]
+    #return(median_row$Length)
+  }
+  
+  
+  for (sample in sample_list) {
+    #adapter removal
+    rl_value_of_median_ds <- calculate_median_rl(adapter_removal_data, sample, "Double")
+    rl_value_of_median_ss <- calculate_median_rl(adapter_removal_data, sample, "Single")
+    read_length_summary_table[read_length_summary_table$Sample == sample, "adapter_ds"] <- rl_value_of_median_ds
+    read_length_summary_table[read_length_summary_table$Sample == sample, "adapter_ss"] <- rl_value_of_median_ss
+    
+    #remove read less than 30bp
+    rl_value_of_median_ds <- calculate_median_rl(remove_less_30_data, sample, "Double")
+    rl_value_of_median_ss <- calculate_median_rl(remove_less_30_data, sample, "Single")
+    read_length_summary_table[read_length_summary_table$Sample == sample, "remove_less_30_ds"] <- rl_value_of_median_ds
+    read_length_summary_table[read_length_summary_table$Sample == sample, "remove_less_30_ss"] <- rl_value_of_median_ss
+    
+    #remove sequencing and library artifacts (samtools)
+    rl_value_of_median_ds <- calculate_median_rl(samtools_data, sample, "Double")
+    rl_value_of_median_ss <- calculate_median_rl(samtools_data, sample, "Single")
+    read_length_summary_table[read_length_summary_table$Sample == sample, "artifact_removal_ds"] <- rl_value_of_median_ds
+    read_length_summary_table[read_length_summary_table$Sample == sample, "artifact_removal_ss"] <- rl_value_of_median_ss
+    
+    #cutadapt
+    rl_value_of_median_ds <- calculate_median_rl(cutadapt_data, sample, "Double")
+    rl_value_of_median_ss <- calculate_median_rl(cutadapt_data, sample, "Single")
+    read_length_summary_table[read_length_summary_table$Sample == sample, "cutadapt_ds"] <- rl_value_of_median_ds
+    read_length_summary_table[read_length_summary_table$Sample == sample, "cutadapt_ss"] <- rl_value_of_median_ss
+  }
+
+  return(read_length_summary_table)
+  
+}
+
+rl_levels <- c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150)
+```
+
+```{r}
+#Read in the read length data for each processing step:
+sample_list <- metadata %>%
+  dplyr::select(Individual_ID) %>%
+  unique() %>%
+  pull()
+
+full_data_table <- metadata %>%
+  dplyr::select(Sequencing_ID, Library_ID, Individual_ID, Strandedness) %>%
+  mutate(Library_ID = str_replace_all(Library_ID, "_10M", ""))
+
+rl_bins_adapterremoval <- fread("./05-results/normalize_eager/dsvss_npre_read_length_adapter_removal.tsv") %>%
+  separate(Study, into = "Library_ID", sep = ".10M", extra = "drop") %>%
+  separate(Library_ID, into = "Library_ID", sep = ".SG1", extra = "drop") %>%
+  rename(counts = 2) %>%
+  mutate(Length = as.factor(Length))
+
+rl_bins_remove30bp <- fread("./05-results/normalize_eager/dsvss_npre_read_length_remove30bp.tsv") %>%
+  separate(Study, into = "Library_ID", sep = ".10M", extra = "drop") %>%
+  separate(Library_ID, into = "Library_ID", sep = ".SG1", extra = "drop") %>%
+  rename(counts = 2) %>%
+  mutate(Length = as.factor(Length))
+
+rl_bins_artifact_removal <- fread("./05-results/normalize_eager/dsvss_npre_read_length_artifact_removal.tsv") %>%
+  separate(Study, into = "Library_ID", sep = ".10M", extra = "drop") %>%
+  separate(Library_ID, into = "Library_ID", sep = ".SG1", extra = "drop") %>%
+  rename(counts = 2) %>%
+  mutate(Length = as.factor(Length))
+
+rl_bins_cutadapt <- fread("./05-results/normalize_eager/dsvss_npre_read_length_cutadapt.tsv") %>%
+  separate(Study, into = "Library_ID", sep = ".10M", extra = "drop") %>%
+  separate(Library_ID, into = "Library_ID", sep = ".SG1", extra = "drop") %>%
+  rename(counts = 2) %>%
+  mutate(Length = as.factor(Length))
+```
+
+```{r}
+#create read_length_summary_table by running the function
+median_rl_summary_table <- median_rl_summary_table(full_data_table, sample_list, rl_bins_adapterremoval, rl_bins_remove30bp, rl_bins_artifact_removal, rl_bins_cutadapt)
+
+median_rl_summary_table_ss <- median_rl_summary_table %>%
+  rename(Individual_ID = 1) %>%
+  dplyr::select(Individual_ID, adapter_ss, remove_less_30_ss, artifact_removal_ss, cutadapt_ss) %>%
+  mutate(Strandedness = "Single") %>%
+  rename(adapter_removal_median = 2, remove_less_30_median = 3, artifact_removal_median = 4, cutadapt_median = 5)
+  
+median_rl_summary_table_ds <- median_rl_summary_table %>%
+  rename(Individual_ID = 1) %>%
+  dplyr::select(Individual_ID, adapter_ds, remove_less_30_ds, artifact_removal_ds, cutadapt_ds) %>%
+  mutate(Strandedness = "Double") %>%
+  rename(adapter_removal_median = 2, remove_less_30_median = 3, artifact_removal_median = 4, cutadapt_median = 5)
+
+read_length_median <- median_rl_summary_table_ss %>%
+  full_join(., median_rl_summary_table_ds)  %>%
+  pivot_longer(adapter_removal_median:cutadapt_median, names_to = "step", values_to = "median_read_length") %>%
+  mutate(step = (factor(step, levels = c("adapter_removal_median", "remove_less_30_median", "artifact_removal_median", "cutadapt_median")))) %>%
+  mutate(step = str_replace_all(step, "adapter_removal_median", "Reads After Adapter Removal and Merging"),
+         step = str_replace_all(step, "remove_less_30_median", "Reads After Removing Reads <30bp"),
+         step = str_replace_all(step, "artifact_removal_median", "Reads After Removing Sequencing and Lab Artifacts"),
+         step = str_replace_all(step, "cutadapt_median", "Reads After Cutadapt")) %>%
+  mutate(Library_type = Strandedness) %>%
+  mutate(Library_type = str_replace_all(Library_type, "Double", "dsLib"),
+         Library_type = str_replace_all(Library_type, "Single", "ssLib"))
+ 
+read_length_median$step <- factor(read_length_median$step, levels = c("Reads After Adapter Removal and Merging", "Reads After Removing Reads <30bp", "Reads After Removing Sequencing and Lab Artifacts", "Reads After Cutadapt")) 
+```
+
+
+```{r}
+#Calculate the percent of reads classified by kraken that are identified as oral
+#Percent of reads classified as oral for coloring (number oral reads/10M reads going into nf-core/eager)
+kraken2_filtered_oral_species <- fread("./05-results/normalize_eager/dsvss_npre_no_rl_kraken2_gtdb207_oral_species_decontam_filtered.tsv") %>%
+  adorn_totals() %>%
+  filter(Species == "Total") %>%
+  pivot_longer(!Species, names_to = "Sequencing_ID", values_to = "number_oral_reads") %>%
+  mutate(number_oral_reads = as.numeric(number_oral_reads)) %>%
+  dplyr::select(-Species)
+
+number_species <- kraken2_filtered_oral_species %>%
+  mutate(Sequencing_ID = str_replace_all(Sequencing_ID, "_10M", "")) %>%
+  full_join(., metadata) %>%
+  rename(Sample = Individual_ID, Library = Strandedness) %>%
+  mutate(Library = str_replace(Library, "Double", "dsLib"),
+         Library = str_replace(Library, "Single", "ssLib")) %>%
+  mutate(percent_oral_reads = (number_oral_reads/Initial_reads)*100) 
+
+#Median RL before and after eager pipeline
+read_length_median_before_v_after <- read_length_median %>%
+  filter(str_detect(step, "Reads After Cutadapt")) %>%
+  rename(median_read_length_post = median_read_length) %>%
+  mutate(median_read_length_pre = 75) %>%
+  rename(Library = Library_type, Sample = Individual_ID) %>%
+  full_join(., number_species) %>%
+  relocate(median_read_length_pre, .before = median_read_length_post) %>%
+  #pivot_wider(names_from = step, values_from = median_read_length_post) %>%
+  pivot_longer(median_read_length_pre:median_read_length_post, names_to = "pre_v_post", values_to = "median_rl") %>%
+  mutate(pre_v_post = str_replace(pre_v_post, "median_read_length_pre", "Before Processing"),
+         pre_v_post = str_replace(pre_v_post, "median_read_length_post", "After Processing"))
+  
+wilcox_results <- read_length_median_before_v_after %>%
+  group_by(pre_v_post) %>%
+  wilcox_test(median_rl ~ Strandedness, paired = TRUE) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")
+
+effect_size_labels <- read_length_median_before_v_after %>%
+  filter(str_detect(pre_v_post, "After Processing")) %>%
+  wilcox_effsize(formula = median_rl ~ Strandedness, paired = TRUE) %>%
+  mutate(effectsize_cat = case_when(
+    magnitude == "small" ~ "†",     
+    magnitude == "moderate" ~ "††",
+    magnitude == "large" ~ "†††"))
+
+wilcox_results <- wilcox_results %>%
+  left_join(effect_size_labels) %>%
+  mutate(annotation = paste(p.adj.signif, effectsize_cat)) %>%
+  mutate(annotation = ifelse(str_detect(p, "NaN"), "", annotation))
+
+annotations <- wilcox_results %>%
+  group_by(pre_v_post) %>%
+  mutate(pre_v_post = factor(pre_v_post, levels = c("Before Processing", "After Processing"))) %>%
+  summarize(annotation = first(annotation),
+            y_position = 80, .groups = 'drop')
+
+#Median RL after processing (per library)
+overall_median_length <- read_length_median_before_v_after %>%
+  filter(pre_v_post == "After Processing") %>%
+  group_by(Library) %>%
+  summarize(
+    median = median(median_rl, na.rm=TRUE),
+    sd = sd(median_rl,na.rm=TRUE) 
+  )
+
+#Plot
+read_length_median_before_after_plot <- read_length_median_before_v_after %>%
+  mutate(pre_v_post = factor(pre_v_post, levels = c("Before Processing", "After Processing"))) %>%
+  ggplot(., aes(x = Library, y = median_rl)) + 
+  geom_boxplot() +
+  geom_jitter(width = 0.075, size = 3, aes(color = percent_oral_reads)) +
+  scale_color_viridis(option = "viridis", begin = 0.1) +
+  theme_classic() +
+  scale_shape_manual(values = c(16, 18)) +
+  labs(x = "Library Type",
+       y = "Median Read Length",
+       color = "Percent of Reads Classified as Oral") +
+  expand_limits(y = 82) +
+  guides(alpha = FALSE) +
+  geom_text(data = annotations, aes(x = 1.5, y = y_position, label = annotation), vjust = -0.5, size = 5) +
+  theme(axis.text.x = element_text( size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+        strip.text = element_text(size = 12),
+        legend.position = "bottom") +
+  facet_wrap(~pre_v_post) +
+  geom_line(aes(group = Sample), linetype = "dashed", color = "#555555", linewidth = 0.2) 
++
+  geom_text_repel(aes(label = Sample), size = 2) #ggrepel package
+
+read_length_median_before_after_plot
+
+#ggsave("./06-publication/main_figures/Figure3A_npre_rl_median_before_v_after.pdf", plot = read_length_median_before_after_plot, device = "pdf", scale = 1, width = 6, height = 6, units = c("in"), dpi = 300)
+
+
+```
+
+
+#B: GOY005 read length throughout nf-core/eager steps
+```{r}
+#Metadata
+library_info <- metadata %>%
+  dplyr::select(Sequencing_ID, Library_ID, Individual_ID, Strandedness) %>%
+  mutate(Library_ID = str_replace_all(Library_ID, "_10M", ""))
+
+rl_levels <- c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150)
+
+read_length_plots <- function(df, sample_list, y_limits, y_breaks, y_labels, rl_bins_adapterremoval, rl_bins_remove30bp, rl_bins_artifact_removal, rl_bins_cutadapt, folder_path) {
+
+  #Create a histogram plot function based on each individual rl_bins input
+  create_rl_plot <- function(rl_bins, sample, plot_title) {
+    
+    rl_summary <- df %>%
+      full_join(rl_bins, by = "Library_ID") %>%
+      dplyr::select(Library_ID, Individual_ID, Strandedness, Length, counts) %>%
+      mutate(Length = factor(Length, levels = rl_levels)) %>%
+      filter(Individual_ID == sample) %>%
+      mutate(total_counts = counts)
+
+    #Separate the ssLib and dsLib of each Individual_ID to find median read values per library
+    rl_summary_single <- rl_summary %>% 
+      filter(Strandedness == "Single") %>% 
+      mutate(Length = as.integer(as.character(Length))) %>%
+      uncount(counts) %>%
+      summarize(median = median(Length))
+      #arrange(Length) %>% mutate(cumulative_counts = cumsum(counts))
+    
+    rl_summary_double <- rl_summary %>% 
+      filter(Strandedness == "Double") %>% 
+      mutate(Length = as.integer(as.character(Length))) %>%
+      uncount(counts) %>%
+      summarize(median = median(Length))
+      #arrange(Length) %>% mutate(cumulative_counts = cumsum(counts))
+    
+    #total_counts_single <- sum(rl_summary_single$counts)
+    #total_counts_double <- sum(rl_summary_double$counts)
+    
+    #median_row_ss <- rl_summary_single[which.min(abs(rl_summary_single$cumulative_counts - total_counts_single / 2)), ]
+    #median_row_ds <- rl_summary_double[which.min(abs(rl_summary_double$cumulative_counts - total_counts_double / 2)), ]
+    
+    #rl_value_of_median_ss <- median_row_ss$Length
+    rl_value_of_median_ss <- rl_summary_single$median
+    #rl_value_of_median_ds <- median_row_ds$Length
+    rl_value_of_median_ds <- rl_summary_double$median
+    
+    #create dummy data for plots with only 30bp+ reads (so all plots start at 0 on the x)
+    zero_to_thirty <- data.frame(Strandedness = rep(c("Double", "Single"), each = 31),
+                                 Length = rep(0:30, times = 2), total_counts = 0) 
+  
+    #Concatenate the original data table with the new rows
+    rl_summary <- rbind(rl_summary, zero_to_thirty, fill=TRUE)
+    
+    #Add a new variable for line type based on the median values
+    rl_summary <- rl_summary %>%
+      mutate(
+        total_counts = total_counts / 100000,
+        Median = case_when(
+          Strandedness == "Single" & Length == rl_value_of_median_ss ~ "ssLib median",
+          Strandedness == "Double" & Length == rl_value_of_median_ds ~ "dsLib median",
+          TRUE ~ NA_character_
+        )
+      )
+
+    #Plot the histogram
+    rl_plot <- ggplot(rl_summary) +
+      geom_bar(data = . %>% filter(Strandedness == "Double"),
+               aes(x = factor(Length), y = total_counts, fill = "dsLib"),
+               alpha = 1, stat = "identity") +
+      geom_bar(data = . %>% filter(Strandedness == "Single"),
+               aes(x = factor(Length), y = total_counts, fill = "ssLib"),
+               alpha = 0.6, stat = "identity") +
+      theme_minimal() +
+      labs(x = "Read Length", y = expression(Reads ~ (x10^5)), title = plot_title) +
+      scale_fill_manual(name = "", values = c("dsLib" = double_color, "ssLib" = single_color)) +
+      scale_linetype_manual(name = "", values = c("dsLib median" = "solid", "ssLib median" = "dashed")) +
+      geom_vline(aes(xintercept = as.numeric(as.character(rl_value_of_median_ds)), linetype = "dsLib median"), color = "red") +
+      geom_vline(aes(xintercept = as.numeric(as.character(rl_value_of_median_ss)), linetype = "ssLib median"), color = "red") +
+      scale_x_discrete(breaks = c(0, 15, 30, 45, 60, 75, 90, 105, 120, 135), 
+                       labels = c("0", "15", "30", "45", "60", "75", "90", "105", "120", "135")) +
+      theme(
+        axis.text.x = element_text(angle = 90, hjust = 1, size = 13),  
+        axis.text.y = element_text(size = 13),  
+        axis.title = element_text(size = 12),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")
+      ) +
+      expand_limits(y = y_limits) +
+      scale_y_continuous(breaks = y_breaks, labels = y_labels) 
+    
+    return(rl_plot)
+  }
+
+  #Iterate over each sample in sample_list to create a plot for each Individual_ID
+  for (sample in sample_list) {
+    
+    #Create four separate plots for each sample using the different rl_bins data for each step in the eager pipeline
+    plot_A <- create_rl_plot(rl_bins_adapterremoval, sample, "Adapter Removal")
+    plot_B <- create_rl_plot(rl_bins_remove30bp, sample, "Remove Reads < 30bp")
+    plot_C <- create_rl_plot(rl_bins_artifact_removal, sample, "Remove Sequencing and Lab Artifacts")
+    plot_D <- create_rl_plot(rl_bins_cutadapt, sample, "Cutadapt")
+    
+    #use ggarange to combine all 4 plots
+    combined_plot <- ggarrange(
+      plot_A, plot_B, plot_C, plot_D,
+      ncol = 4,
+      labels = c("A", "B", "C", "D"),
+      common.legend = TRUE, 
+      legend = "bottom"
+    )
+  
+    #add the Individual_ID to the top of each plot
+    combined_plot_annotated <- annotate_figure(combined_plot, top = text_grob(paste0(sample), face = "bold", size = 14))
+    
+    #save the combined plot to a single file for each sample in the designated folder
+    ggsave(
+      filename = file.path(folder_path, paste0(sample, "_npre_rl_throughout_eager.pdf")), 
+      plot = combined_plot_annotated, 
+      device = "pdf", 
+      scale = 1, 
+      width = 15, 
+      height = 5, 
+      units = "in", 
+      dpi = 300
+    )
+  }
+}
+```
+
+
+```{r}
+rl_bins_adapterremoval <- fread("./05-results/normalize_eager/dsvss_npre_read_length_adapter_removal.tsv") %>%
+  separate(Study, into = "Library_ID", sep = ".10M", extra = "drop") %>%
+  separate(Library_ID, into = "Library_ID", sep = ".SG1", extra = "drop") %>%
+  rename(counts = 2) %>%
+  mutate(Length = as.factor(Length))
+
+rl_bins_remove30bp <- fread("./05-results/normalize_eager/dsvss_npre_read_length_remove30bp.tsv") %>%
+  separate(Study, into = "Library_ID", sep = ".10M", extra = "drop") %>%
+  separate(Library_ID, into = "Library_ID", sep = ".SG1", extra = "drop") %>%
+  rename(counts = 2) %>%
+  mutate(Length = as.factor(Length))
+
+rl_bins_artifact_removal <- fread("./05-results/normalize_eager/dsvss_npre_read_length_artifact_removal.tsv") %>%
+  separate(Study, into = "Library_ID", sep = ".10M", extra = "drop") %>%
+  separate(Library_ID, into = "Library_ID", sep = ".SG1", extra = "drop") %>%
+  rename(counts = 2) %>%
+  mutate(Length = as.factor(Length))
+
+rl_bins_cutadapt <- fread("./05-results/normalize_eager/dsvss_npre_read_length_cutadapt.tsv") %>%
+  separate(Study, into = "Library_ID", sep = ".10M", extra = "drop") %>%
+  separate(Library_ID, into = "Library_ID", sep = ".SG1", extra = "drop") %>%
+  rename(counts = 2) %>%
+  mutate(Length = as.factor(Length))
+```
+
+
+```{r}
+combine_GOY <- rl_bins_adapterremoval %>%
+  filter(str_detect(Library_ID, "GOY005")) %>%
+  rename(adapterremoval = counts) %>%
+  full_join(., rl_bins_remove30bp %>%
+              filter(str_detect(Library_ID, "GOY005")) %>%
+              rename(remove30bp = counts)) %>%
+  full_join(., rl_bins_artifact_removal %>%
+              filter(str_detect(Library_ID, "GOY005")) %>%
+              rename(artifact_removal = counts)) %>%
+  full_join(., rl_bins_cutadapt %>%
+              filter(str_detect(Library_ID, "GOY005")) %>%
+              rename(cutadapt = counts)) %>%
+  mutate(across(everything(), ~ replace_na(.x, 0)))
+
+```
+
+
+Change sample list and y-axis limits to generate figures for the other samples
+```{r}
+y4 <- c("GOY005")
+
+y_limits_4 <- c(0, 4)
+y_breaks_4 <- c(0, 1, 2, 3, 4)
+y_labels_4 <- c("0", "1", "2", "3", "4")
+
+read_length_plots(library_info, y4, y_limits_4, y_breaks_4, y_labels_4, rl_bins_adapterremoval, rl_bins_remove30bp, rl_bins_artifact_removal, rl_bins_cutadapt, "./06-publication/main_figures/")
+```
+
+
+#C: Median GC content before and after processing via nf-core/eager
+```{r}
+#Function to calculate the meadian GC content of each library throughout process 
+median_gc_summary_table <- function(metadata, sample_list, adapter_removal_data, remove_less_30_data, artifact_removal_data, cutadapt_data) {
+  
+  #Create a blank dataframe
+  gc_summary_table <- data.frame(Sample = sample_list,
+                                          adapter_ds = numeric(length(sample_list)),
+                                          adapter_ss = numeric(length(sample_list)),
+                                          remove_less_30_ds = numeric(length(sample_list)),
+                                          remove_less_30_ss = numeric(length(sample_list)),
+                                          artifact_removal_ds = numeric(length(sample_list)),
+                                          artifact_removal_ss = numeric(length(sample_list)),
+                                          cutadapt_ds = numeric(length(sample_list)),
+                                          cutadapt_ss = numeric(length(sample_list)),
+                                          stringsAsFactors = FALSE)
+  
+  #Function to calculate median read length based on dataset, sample, and strandedness
+  calculate_median_gc <- function(data, sample, strandedness) {
+    
+    gc_summary <- metadata %>%
+      full_join(., data, by = "Library_ID") %>%
+      dplyr::select(Library_ID, Individual_ID, Strandedness, gc, counts) %>%
+      filter(Individual_ID == sample, Strandedness == strandedness) %>%
+      mutate(gc = as.integer(as.character(gc))) %>%
+      uncount(counts) %>%
+      summarize(median = median(gc))
+    
+    return(gc_summary$median)
+  }
+  
+  
+  for (sample in sample_list) {
+    #adapter removal
+    gc_value_of_median_ds <- calculate_median_gc(adapter_removal_data, sample, "Double")
+    gc_value_of_median_ss <- calculate_median_gc(adapter_removal_data, sample, "Single")
+    gc_summary_table[gc_summary_table$Sample == sample, "adapter_ds"] <- gc_value_of_median_ds
+    gc_summary_table[gc_summary_table$Sample == sample, "adapter_ss"] <- gc_value_of_median_ss
+    
+    #remove read less than 30bp
+    gc_value_of_median_ds <- calculate_median_gc(remove_less_30_data, sample, "Double")
+    gc_value_of_median_ss <- calculate_median_gc(remove_less_30_data, sample, "Single")
+    gc_summary_table[gc_summary_table$Sample == sample, "remove_less_30_ds"] <- gc_value_of_median_ds
+    gc_summary_table[gc_summary_table$Sample == sample, "remove_less_30_ss"] <- gc_value_of_median_ss
+    
+    #remove sequencing and lab artifacts (samtools)
+    gc_value_of_median_ds <- calculate_median_gc(artifact_removal_data, sample, "Double")
+    gc_value_of_median_ss <- calculate_median_gc(artifact_removal_data, sample, "Single")
+    gc_summary_table[gc_summary_table$Sample == sample, "artifact_removal_ds"] <- gc_value_of_median_ds
+    gc_summary_table[gc_summary_table$Sample == sample, "artifact_removal_ss"] <- gc_value_of_median_ss
+    
+    #cutadapt
+    gc_value_of_median_ds <- calculate_median_gc(cutadapt_data, sample, "Double")
+    gc_value_of_median_ss <- calculate_median_gc(cutadapt_data, sample, "Single")
+    gc_summary_table[gc_summary_table$Sample == sample, "cutadapt_ds"] <- gc_value_of_median_ds
+    gc_summary_table[gc_summary_table$Sample == sample, "cutadapt_ss"] <- gc_value_of_median_ss
+  }
+
+  return(gc_summary_table)
+  
+}
+
+gc_levels <- c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104)
+
+```
+
+
+```{r}
+#read in the gc data for each step
+gc_bins_adapterremoval <- fread("./05-results/normalize_eager/dsvss_npre_gc_adapter_removal.tsv") %>%
+  separate(Study, into = "Library_ID", sep = ".10M", extra = "drop") %>%
+  separate(Library_ID, into = "Library_ID", sep = ".SG1", extra = "drop") %>%
+  rename(counts = 2) %>%
+  separate(gc_bin, into = c("drop", "gc"), sep = ",", remove = FALSE) %>%
+  mutate(gc = str_remove(gc, "\\]")) %>%
+  dplyr::select(-gc_bin, -drop) %>%
+  mutate(gc = as.factor(gc))
+
+gc_bins_remove30bp <- fread("./05-results/normalize_eager/dsvss_npre_gc_remove30bp.tsv") %>%
+  separate(Study, into = "Library_ID", sep = ".10M", extra = "drop") %>%
+  separate(Library_ID, into = "Library_ID", sep = ".SG1", extra = "drop") %>%
+  rename(counts = 2) %>%
+  separate(gc_bin, into = c("drop", "gc"), sep = ",", remove = FALSE) %>%
+  mutate(gc = str_remove(gc, "\\]")) %>%
+  dplyr::select(-gc_bin, -drop) %>%
+  mutate(gc = as.factor(gc))
+
+gc_bins_artifact_removal <- fread("./05-results/normalize_eager/dsvss_npre_gc_artifact_removal.tsv") %>%
+  separate(Study, into = "Library_ID", sep = ".10M", extra = "drop") %>%
+  separate(Library_ID, into = "Library_ID", sep = ".SG1", extra = "drop") %>%
+  rename(counts = 2) %>%
+  separate(gc_bin, into = c("drop", "gc"), sep = ",", remove = FALSE) %>%
+  mutate(gc = str_remove(gc, "\\]")) %>%
+  dplyr::select(-gc_bin, -drop) %>%
+  mutate(gc = as.factor(gc))
+
+gc_bins_cutadapt <- fread("./05-results/normalize_eager/dsvss_npre_gc_cutadapt.tsv") %>%
+  separate(Study, into = "Library_ID", sep = ".10M", extra = "drop") %>%
+  separate(Library_ID, into = "Library_ID", sep = ".SG1", extra = "drop") %>%
+  rename(counts = 2) %>%
+  separate(gc_bin, into = c("drop", "gc"), sep = ",", remove = FALSE) %>%
+  mutate(gc = str_remove(gc, "\\]")) %>%
+  dplyr::select(-gc_bin, -drop) %>%
+  mutate(gc = as.factor(gc))
+
+#create gc_summary_table
+median_gc_summary_table <- median_gc_summary_table(full_data_table, sample_list, gc_bins_adapterremoval, gc_bins_remove30bp, gc_bins_artifact_removal, gc_bins_cutadapt) 
+
+median_gc_summary_table_ss <- median_gc_summary_table %>%
+  rename(Individual_ID = 1) %>%
+  dplyr::select(Individual_ID, adapter_ss, remove_less_30_ss, artifact_removal_ss, cutadapt_ss) %>%
+  mutate(Strandedness = "Single") %>%
+  rename(adapter_removal_median = 2, remove_less_30_median = 3, artifact_removal_median = 4, cutadapt_median = 5) 
+  
+median_gc_summary_table_ds <- median_gc_summary_table %>%
+  rename(Individual_ID = 1) %>%
+  dplyr::select(Individual_ID, adapter_ds, remove_less_30_ds, artifact_removal_ds, cutadapt_ds) %>%
+  mutate(Strandedness = "Double") %>%
+  rename(adapter_removal_median = 2, remove_less_30_median = 3, artifact_removal_median = 4, cutadapt_median = 5)
+
+gc_median <- median_gc_summary_table_ss %>%
+  full_join(., median_gc_summary_table_ds)  %>%
+  pivot_longer(adapter_removal_median:cutadapt_median, names_to = "step", values_to = "median_gc") %>%
+  mutate(step = (factor(step, levels = c("adapter_removal_median", "remove_less_30_median", "artifact_removal_median", "cutadapt_median")))) %>%
+  mutate(step = str_replace_all(step, "adapter_removal_median", "Reads After Adapter Removal and Merging"),
+         step = str_replace_all(step, "remove_less_30_median", "Reads After Removing Reads <30bp"),
+         step = str_replace_all(step, "artifact_removal_median", "Reads After Removing Sequencing and Lab Artifacts"),
+         step = str_replace_all(step, "cutadapt_median", "Reads After Cutadapt")) %>%
+  mutate(Library_type = Strandedness) %>%
+  mutate(Library_type = str_replace_all(Library_type, "Double", "dsLib"),
+         Library_type = str_replace_all(Library_type, "Single", "ssLib"))
+ 
+gc_median$step <- factor(gc_median$step, levels = c("Reads After Adapter Removal and Merging", "Reads After Removing Reads <30bp", "Reads After Removing Sequencing and Lab Artifacts", "Reads After Cutadapt")) 
+
+```
+
+
+```{r}
+library_info <- metadata %>%
+  dplyr::select(Sequencing_ID, Library_ID, Individual_ID, Strandedness) %>%
+  mutate(Library_ID = str_replace_all(Library_ID, "_10M", ""))
+
+gc_content <- fread("./05-results/normalize_eager/dsvss_npre_gc_content_before_processing.tsv") %>%
+  mutate(Study = str_replace_all(Study, ".10M_raw_R1_gc_rl.tsv.gz", "")) %>%
+  separate(Study, into = "Study", sep = ".SG", extra = "drop") %>%
+  rename(Library_ID = Study) %>%
+  full_join(., library_info) %>%
+  separate(gc_bin, into = c("drop", "gc"), sep = ",", remove = FALSE) %>%
+  mutate(gc = str_remove(gc, "\\]")) %>%
+  dplyr::select(-gc_bin, -drop) %>%
+  mutate(gc = as.factor(gc))
+
+
+median_gc_summary_table_raw_reads <- function(metadata, sample_list, raw_reads_data) {
+  
+  #Create a blank dataframe
+  gc_summary_table <- data.frame(Sample = sample_list,
+                                          raw_reads_ds = numeric(length(sample_list)),
+                                          raw_reads_ss = numeric(length(sample_list)),
+                                          stringsAsFactors = FALSE)
+  
+  #Function to calculate median read length based on dataset, sample, and strandedness
+  calculate_median_gc <- function(data, sample, strandedness) {
+    
+    gc_summary <- metadata %>%
+      full_join(., data) %>%
+      dplyr::select(Library_ID, Individual_ID, Strandedness, gc, counts_gc) %>%
+      filter(Individual_ID == sample, Strandedness == strandedness) %>%
+      mutate(gc = as.numeric(as.character(gc))) %>%
+      uncount(counts_gc) %>%
+      summarize(median = median(gc))
+    return(gc_summary$median)
+  }
+  
+  
+  for (sample in sample_list) {
+    #raw reads before eager
+    gc_value_of_median_ds <- calculate_median_gc(raw_reads_data, sample, "Double")
+    gc_value_of_median_ss <- calculate_median_gc(raw_reads_data, sample, "Single")
+    gc_summary_table[gc_summary_table$Sample == sample, "raw_reads_ds"] <- gc_value_of_median_ds
+    gc_summary_table[gc_summary_table$Sample == sample, "raw_reads_ss"] <- gc_value_of_median_ss
+
+  }
+
+  return(gc_summary_table)
+  
+}
+
+pre_eager_median_gc <- median_gc_summary_table_raw_reads(full_data_table, sample_list, gc_content)
+
+#ssLibs
+pre_eager_median_gc_ss <- pre_eager_median_gc %>%
+  rename(Individual_ID = 1) %>%
+  dplyr::select(Individual_ID, raw_reads_ss) %>%
+  mutate(Strandedness = "Single") %>%
+  rename(raw_reads_median = 2)
+
+#dsLibs
+pre_eager_median_gc_ds <- pre_eager_median_gc %>%
+  rename(Individual_ID = 1) %>%
+  dplyr::select(Individual_ID, raw_reads_ds) %>%
+  mutate(Strandedness = "Double") %>%
+  rename(raw_reads_median = 2)
+
+#Combine
+gc_median_pre_eager <- pre_eager_median_gc_ss %>%
+  full_join(., pre_eager_median_gc_ds)  %>%
+  mutate(Library_type = Strandedness) %>%
+  mutate(Library_type = str_replace_all(Library_type, "Double", "dsLib"),
+         Library_type = str_replace_all(Library_type, "Single", "ssLib")) %>%
+  mutate(step = "pre_eager") %>%
+  rename(median_gc = raw_reads_median)
+```
+
+
+```{r}
+gc_median_full <- gc_median %>%
+  full_join(., gc_median_pre_eager) %>%
+  filter(!str_detect(step, "Reads After Adapter Removal"),
+         !str_detect(step, "Reads After Removing Reads <30bp"),
+         !str_detect(step, "Reads After Removing Sequencing and Lab Artifacts")) %>%
+  pivot_wider(names_from = "step", values_from = "median_gc") %>%
+  rename(post_processing = 'Reads After Cutadapt') %>%
+  mutate(percent_gc_change = ((post_processing - pre_eager)/pre_eager)*100 ) %>%
+  rename(Library = Library_type, Sample = Individual_ID) %>%
+  full_join(., number_species) 
+
+
+```
+
+
+```{r}
+gc_median_before_after <- gc_median_full %>%
+  pivot_longer(post_processing:pre_eager, names_to = "pre_v_post", values_to = "median_gc") %>%
+  mutate(pre_v_post = str_replace(pre_v_post, "post_processing", "After Processing"),
+         pre_v_post = str_replace(pre_v_post, "pre_eager", "Before Processing")) 
+
+wilcox_results <- gc_median_before_after %>%
+  group_by(pre_v_post) %>%
+  wilcox_test(median_gc ~ Strandedness, paired = TRUE) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")
+
+effect_size_labels <- gc_median_before_after %>%
+  group_by(pre_v_post) %>%
+  wilcox_effsize(formula = median_gc ~ Strandedness, paired = TRUE) %>%
+  mutate(effectsize_cat = case_when(
+    magnitude == "small" ~ "†",     
+    magnitude == "moderate" ~ "††",
+    magnitude == "large" ~ "†††"))
+
+wilcox_results <- wilcox_results %>%
+  left_join(effect_size_labels) %>%
+  mutate(annotation = paste(p.adj.signif, effectsize_cat))
+
+annotations <- wilcox_results %>%
+  group_by(pre_v_post) %>%
+  mutate(pre_v_post = factor(pre_v_post, levels = c("Before Processing", "After Processing"))) %>%
+  summarize(annotation = first(annotation),
+            y_position = 64, .groups = 'drop')
+
+#Median GC after processing (per library)
+overall_median_gc <- gc_median_before_after %>%
+  filter(pre_v_post == "After Processing") %>%
+  group_by(Library) %>%
+  summarize(median = median(median_gc, na.rm = TRUE),
+            sd = sd(median_gc, na.rm = TRUE))
+
+#Plot
+gc_median_before_after_plot <- gc_median_before_after %>%
+  mutate(pre_v_post = factor(pre_v_post, levels = c("Before Processing", "After Processing"))) %>%
+  ggplot(., aes(x = Library, y = median_gc)) + 
+  geom_boxplot() +
+  geom_jitter(width = 0.075, size = 3, aes(color = percent_oral_reads)) +
+  scale_color_viridis(option = "viridis", begin = 0.1) +
+  theme_classic() +
+  scale_shape_manual(values = c(16, 18)) +
+  labs(x = "Library Type",
+       y = "Median GC Content",
+       color = "Percent of Reads Classified as Oral") +
+  scale_y_continuous(limits = c(34, 67)) +
+  guides(alpha = FALSE) +
+  geom_text(data = annotations, aes(x = 1.5, y = y_position, label = annotation), vjust = -0.5, size = 5) +
+  theme(axis.text.x = element_text( size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+        stip.text = element_text(size = 12),
+        legend.position = "bottom") +
+  facet_wrap(~pre_v_post) +
+  geom_line(aes(group = Sample), linetype = "dashed", color = "#555555", linewidth = 0.2) 
++
+  geom_text_repel(aes(label = Sample), size = 2)
+
+gc_median_before_after_plot
+
+#ggsave("./06-publication/main_figures/Figure3C_npre_gc_median_before_after.pdf", plot = gc_median_before_after_plot, device = "pdf", scale = 1, width = 6, height = 6, units = c("in"), dpi = 300)
+
+```
+
+#D: GOY005 GC content throughout nf-core/eager steps
+```{r}
+#metadata
+library_info <- metadata %>%
+  dplyr::select(Sequencing_ID, Library_ID, Individual_ID, Strandedness) %>%
+  mutate(Library_ID = str_replace_all(Library_ID, "_10M", ""))
+
+gc_levels <- c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104)
+
+gc_plots <- function(df, sample_list, y_limits, y_breaks, y_labels, gc_bins_adapterremoval, gc_bins_remove30bp, gc_bins_artifact_removal, gc_bins_cutadapt, folder_path) {
+
+  #Create a histogram plot function based on each individual gc_bins input
+  create_gc_plot <- function(gc_bins, sample, plot_title) {
+    
+    gc_summary <- df %>%
+      full_join(gc_bins, by = "Library_ID") %>%
+      dplyr::select(Library_ID, Individual_ID, Strandedness, gc, counts) %>%
+      mutate(gc = as.numeric(as.character(gc))) %>%
+      filter(Individual_ID == sample) %>%
+      mutate(total_counts = counts)
+
+    #Separate the ssLib and dsLib of each Individual_ID to find median GC values per library
+    gc_summary_single <- gc_summary %>% 
+      filter(Strandedness == "Single") %>%
+      mutate(gc = as.integer(as.character(gc))) %>%
+      uncount(counts) %>%
+      summarize(median = median(gc))
+    
+    
+    gc_summary_double <- gc_summary %>% 
+      filter(Strandedness == "Double") %>%
+      mutate(gc = as.integer(as.character(gc))) %>%
+      uncount(counts) %>%
+      summarize(median = median(gc))
+    
+    gc_value_of_median_ss <- gc_summary_single$median
+    gc_value_of_median_ds <- gc_summary_double$median
+
+    #Add a new variable for line type based on the median GC values
+    gc_summary <- gc_summary %>%
+      mutate(
+        total_counts = total_counts / 100000,
+        Median = case_when(
+          Strandedness == "Single" & gc == gc_value_of_median_ss ~ "ssLib median",
+          Strandedness == "Double" & gc == gc_value_of_median_ds ~ "dsLib median",
+          TRUE ~ NA_character_
+        )
+      )
+
+    #Plot the histogram
+    gc_plot <- ggplot(gc_summary) +
+      geom_bar(data = . %>% filter(Strandedness == "Double"),
+               aes(x = gc, y = total_counts, fill = "dsLib"),
+               alpha = 1, stat = "identity") +
+      geom_bar(data = . %>% filter(Strandedness == "Single"),
+               aes(x = gc, y = total_counts, fill = "ssLib"),
+               alpha = 0.6, stat = "identity") +
+      theme_minimal() +
+      labs(x = "%GC", y = expression(Reads ~ (x10^5)), title = plot_title) +
+      scale_fill_manual(name = "", values = c("dsLib" = double_color, "ssLib" = single_color)) +
+      scale_linetype_manual(name = "", values = c("dsLib median" = "solid", "ssLib median" = "dashed")) +
+      geom_vline(aes(xintercept = as.numeric(as.character(gc_value_of_median_ds)), linetype = "dsLib median"), color = "red") +
+      geom_vline(aes(xintercept = as.numeric(as.character(gc_value_of_median_ss)), linetype = "ssLib median"), color = "red") +
+      #scale_x_discrete(breaks = c(25, 50, 75, 100, 105), labels = c("25", "50", "75", "100", "")) +
+      scale_x_continuous(
+      limits = c(0, 105),
+      breaks = seq(25, 100, by = 25),
+      expand = c(0, 0)) + 
+      theme(
+        axis.text.x = element_text(angle = 90, hjust = 1, size = 13),  
+        axis.text.y = element_text(size = 13),  
+        axis.title = element_text(size = 12),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")
+      ) +
+      expand_limits(y = y_limits) +
+      scale_y_continuous(breaks = y_breaks, labels = y_labels) 
+    
+    return(gc_plot)
+  }
+
+  #Iterate over each sample in sample_list to create a plot for each Individual_ID
+  for (sample in sample_list) {
+    
+    #Create four separate plots for each sample using the different gc_bins data for each step 
+    plot_A <- create_gc_plot(gc_bins_adapterremoval, sample, "Adapter Removal")
+    plot_B <- create_gc_plot(gc_bins_remove30bp, sample, "Remove Reads < 30bp")
+    plot_C <- create_gc_plot(gc_bins_artifact_removal, sample, "Remove Sequencing and Lab Artifacts")
+    plot_D <- create_gc_plot(gc_bins_cutadapt, sample, "Cutadapt")
+    
+    #Combine all 3 plots per individual using ggarange
+    combined_plot <- ggarrange(
+      plot_A, plot_B, plot_C, plot_D,
+      ncol = 4,
+      labels = c("A", "B", "C", "D"),
+      common.legend = TRUE, 
+      legend = "bottom"
+    )
+  
+    #Annotate the plot to add the Individual_ID 
+    combined_plot_annotated <- annotate_figure(combined_plot, top = text_grob(paste0(sample), face = "bold", size = 14))
+    
+    #Save the combined plot to a single file for each sample
+    ggsave(
+      filename = file.path(folder_path, paste0(sample, "_npre_gc_throughout_eager.pdf")), 
+      plot = combined_plot_annotated, 
+      device = "pdf", 
+      scale = 1, 
+      width = 15, 
+      height = 5, 
+      units = "in", 
+      dpi = 300
+    )
+  }
+}
+```
+
+
+```{r}
+gc_bins_adapterremoval <- fread("./05-results/normalize_eager/dsvss_npre_gc_adapter_removal.tsv") %>%
+  separate(Study, into = "Library_ID", sep = ".10M", extra = "drop") %>%
+  separate(Library_ID, into = "Library_ID", sep = ".SG1", extra = "drop") %>%
+  rename(counts = 2) %>%
+  separate(gc_bin, into = c("drop", "gc"), sep = ",", remove = FALSE) %>%
+  mutate(gc = str_remove(gc, "\\]")) %>%
+  dplyr::select(-gc_bin, -drop) %>%
+  mutate(gc = as.factor(gc))
+
+gc_bins_remove30bp <- fread("./05-results/normalize_eager/dsvss_npre_gc_remove30bp.tsv") %>%
+  separate(Study, into = "Library_ID", sep = ".10M", extra = "drop") %>%
+  separate(Library_ID, into = "Library_ID", sep = ".SG1", extra = "drop") %>%
+  rename(counts = 2) %>%
+  separate(gc_bin, into = c("drop", "gc"), sep = ",", remove = FALSE) %>%
+  mutate(gc = str_remove(gc, "\\]")) %>%
+  dplyr::select(-gc_bin, -drop) %>%
+  mutate(gc = as.factor(gc))
+
+gc_bins_artifact_removal <- fread("./05-results/normalize_eager/dsvss_npre_gc_artifact_removal.tsv") %>%
+  separate(Study, into = "Library_ID", sep = ".10M", extra = "drop") %>%
+  separate(Library_ID, into = "Library_ID", sep = ".SG1", extra = "drop") %>%
+  rename(counts = 2) %>%
+  separate(gc_bin, into = c("drop", "gc"), sep = ",", remove = FALSE) %>%
+  mutate(gc = str_remove(gc, "\\]")) %>%
+  dplyr::select(-gc_bin, -drop) %>%
+  mutate(gc = as.factor(gc))
+
+gc_bins_cutadapt <- fread("./05-results/normalize_eager/dsvss_npre_gc_cutadapt.tsv") %>%
+  separate(Study, into = "Library_ID", sep = ".10M", extra = "drop") %>%
+  separate(Library_ID, into = "Library_ID", sep = ".SG1", extra = "drop") %>%
+  rename(counts = 2) %>%
+  separate(gc_bin, into = c("drop", "gc"), sep = ",", remove = FALSE) %>%
+  mutate(gc = str_remove(gc, "\\]")) %>%
+  dplyr::select(-gc_bin, -drop) %>%
+  mutate(gc = as.factor(gc))
+```
+
+
+```{r}
+combine_GOY_GC <- gc_bins_adapterremoval %>%
+  filter(str_detect(Library_ID, "GOY005")) %>%
+  rename(adapterremoval = counts) %>%
+  full_join(., gc_bins_remove30bp %>%
+              filter(str_detect(Library_ID, "GOY005")) %>%
+              rename(remove30bp = counts)) %>%
+  full_join(., gc_bins_artifact_removal %>%
+              filter(str_detect(Library_ID, "GOY005")) %>%
+              rename(artifact_removal = counts)) %>%
+  full_join(., gc_bins_cutadapt %>%
+              filter(str_detect(Library_ID, "GOY005")) %>%
+              rename(cutadapt = counts)) %>%
+  mutate(across(everything(), ~ replace_na(.x, 0)))
+
+```
+
+
+Change sample list and y-axis limits to generate figures for the other samples
+```{r}
+y5 <- c("GOY005")
+
+y_limits_5 <- c(0,5)
+y_breaks_5 <- c(0, 1, 2, 3, 4, 5)
+y_labels_5 <- c("0", "1", "2", "3", "4", "5")
+
+gc_plots(library_info, y5, y_limits_5, y_breaks_5, y_labels_5, gc_bins_adapterremoval, gc_bins_remove30bp,  gc_bins_artifact_removal, gc_bins_cutadapt, "./06-publication/main_figures/")
+```
+
+
+

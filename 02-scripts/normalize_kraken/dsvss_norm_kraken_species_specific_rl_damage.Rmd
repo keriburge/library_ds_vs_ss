@@ -1,0 +1,4095 @@
+---
+title: "Zooming in on specific species - dsLibs v. ssLibs (NPost dataset)"
+author: "Keri Burge"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r, eval=TRUE, echo=FALSE, message=FALSE}
+#Load in all necessary packages
+library(knitr)
+library(data.table)
+library(ggplot2)
+library(viridis)
+library(rstatix)
+library(mixOmics)
+library(janitor)
+library(dplyr)
+library(vegan)
+library(ggrepel)
+library(ggpubr)
+library(tidyverse)
+
+```
+
+
+```{r setup}
+knitr::opts_knit$set(root.dir = normalizePath("../.."))
+```
+
+
+# Colors
+```{r, colors}
+double_color <- "#04387a"
+single_color <- "#6fbfdc"
+  
+```
+
+#Metadata
+```{r}
+metadata <- fread("./05-results/normalize_kraken/dsvss_npost_w_rl_subsampling_metadata.tsv") 
+
+metadata_no_rl <- metadata %>%
+  filter(Read_length_subsampling == "none")
+```
+
+
+
+#Prepare the read length tables
+```{r}
+files <- list.files(path = "./05-results/normalize_kraken/oral_well_preserved_PCs", pattern = ".oral_well_preserved_PCs.tsv", full.names = T)
+
+taxIDs <- fread("./05-results/normalize_kraken/dsvss_npost_oral_PCs_taxIDs.tsv")
+
+rl_oral_PCs_table <- function(files) {
+  oral_gc_rl <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(read_header = 1,
+          taxid = 2,
+          read_length = 3,
+          GC = 4) %>%
+    left_join(., taxIDs %>%
+              dplyr::select(taxid, taxonomy)) %>%
+    select(-read_header, -taxid, -GC) %>%
+    group_by(taxonomy, read_length) %>%
+    summarise(counts = n()) %>%
+    mutate(Sequencing_ID = basename(fn)) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".oral_well_preserved_PCs.tsv", "")) %>%
+    inner_join(., metadata_no_rl %>%
+              dplyr::select(Sequencing_ID, Strandedness)) 
+  })
+  
+  oral_gc_rl_df <- do.call(rbind, oral_gc_rl) 
+  oral_gc_rl_df <- oral_gc_rl_df %>%
+    filter(!str_detect(Sequencing_ID, "BAN001")) %>%
+    filter(!str_detect(Sequencing_ID, "FUM003")) 
+  
+  return(oral_gc_rl_df)
+}
+
+
+oral_pcs_rl <- rl_oral_PCs_table(files)
+
+gc_categories <- fread("./05-results/normalize_kraken/dsvss_npost_oral_pc_species_gc_categories.csv")
+
+oral_pcs_rl <- oral_pcs_rl %>%
+  full_join(., gc_categories, by = "taxonomy")
+```
+
+# Calculate the median read length for each library
+```{r}
+#function to calculate the median read length of oral reads per libraryID
+median_rl_summary_table <- function(sample_list, oral_reads_length_table) {
+  
+  #Create a blank dataframe
+  read_length_summary_table <- data.frame(Individual_ID = sample_list,
+                                          Double = numeric(length(sample_list)),
+                                          Single = numeric(length(sample_list)),
+                                          stringsAsFactors = FALSE)
+  
+  #Function to calculate median read length based on dataset, sample, and strandedness
+  calculate_median_rl <- function(data, sample, strandedness) {
+    rl_summary <- data %>%
+      dplyr::select(Library_ID, Individual_ID, Strandedness, read_length, counts) %>%
+      mutate(read_length = as.integer(as.character(read_length))) %>%
+      filter(Individual_ID == sample, Strandedness == strandedness) %>%
+      uncount(counts) %>%
+      mutate(read_length = as.integer(read_length)) %>%
+      summarize(median_rl = median(read_length))
+    
+    return(rl_summary$median_rl)
+  }
+  
+  
+  for (sample in sample_list) {
+    #adapter removal
+    rl_value_of_median_ds <- calculate_median_rl(oral_reads_length_table, sample, "Double")
+    rl_value_of_median_ss <- calculate_median_rl(oral_reads_length_table, sample, "Single")
+    read_length_summary_table[read_length_summary_table$Individual_ID == sample, "Double"] <- rl_value_of_median_ds
+    read_length_summary_table[read_length_summary_table$Individual_ID == sample, "Single"] <- rl_value_of_median_ss
+    
+   }
+
+  return(read_length_summary_table)
+  
+}
+
+samples <- metadata_no_rl %>%
+  dplyr::select(Individual_ID) %>%
+  unique() %>%
+  pull()
+
+```
+
+
+#Read length distributions
+## Lautropia mirabilis -> high GC content (65.5)
+```{r}
+l_mirabilis_table <- oral_pcs_rl %>%
+  ungroup() %>%
+  filter(taxonomy == "Lautropia mirabilis") %>%
+  full_join(., metadata_no_rl %>%
+              select(Sequencing_ID, Library_ID, Individual_ID)) %>%
+  select(-taxonomy)
+```
+
+Plot total number of reads per library
+```{r}
+column_colors <- c(double_color, single_color)
+
+reads_histogram <- l_mirabilis_table %>%
+  select(Sequencing_ID, counts) %>%
+  group_by(Sequencing_ID) %>%
+  mutate(total_counts = sum(counts)) %>%
+  ungroup() %>%
+  select(-counts) %>%
+  unique() %>%
+  mutate(across(where(is.numeric), ~replace_na(.x, 0))) %>%
+  filter(total_counts > 100) %>%
+  inner_join(., metadata_no_rl %>%
+              select(Sequencing_ID, Individual_ID, Strandedness)) %>%
+  ggplot(., aes(x=Strandedness, y=total_counts, fill=Strandedness)) +
+    geom_bar(stat="identity") +
+    theme_minimal() +
+    labs(title = "", x = "Individual ID & Strandedness", y = "Read Count") +
+    guides(fill=guide_legend(title="")) +
+    theme(legend.position="bottom") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    guides(fill = guide_legend(reverse=TRUE)) +
+    scale_fill_discrete(name = "", type = column_colors) +
+    facet_grid(~Individual_ID, scales = "free_x", space = "free") +
+    theme(strip.text.x = element_text(angle = 90, hjust = 1, size = 14),
+          axis.text.x = element_text(size = 12),
+          axis.text.y = element_text(size = 14),
+          strip.text = element_text(size = 12),
+          legend.text = element_text(size = 10),
+          axis.title.y = element_text(size = 14),
+          axis.title.x = element_text(size = 14)) 
+
+reads_histogram
+
+#ggsave("./06_publication/supplemental_figures/npost_species/l_mirabilis/l_mirabilis_read_count_bar_plot.pdf", plot = reads_histogram, device = "pdf", scale = 1, width = 10, height = 6, units = c("in"), dpi = 300)
+```
+
+
+```{r}
+median_rl_l_mirabilis <- median_rl_summary_table(samples, l_mirabilis_table) %>%
+  pivot_longer(-Individual_ID, values_to = "median_rl", names_to = "Strandedness")
+
+```
+
+FUM003 and BAN001 do not have reads for this species 
+
+CDM019
+```{r}
+read_length_table <- l_mirabilis_table %>%
+  filter(Individual_ID == "CDM019") 
+
+median_rl_info <- median_rl_l_mirabilis %>%
+  filter(Individual_ID == "CDM019") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100000) %>%
+  #mutate(Length = as.numeric(Length)) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 50)) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/l_mirabilis/l_mirabilis_CDM019_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+CDM020
+```{r}
+read_length_table <- l_mirabilis_table %>%
+  filter(Individual_ID == "CDM020") 
+
+median_rl_info <- median_rl_l_mirabilis %>%
+  filter(Individual_ID == "CDM020") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 1500)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/l_mirabilis/l_mirabilis_CDM020_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+FUM002    
+```{r}
+read_length_table <- l_mirabilis_table %>%
+  filter(Individual_ID == "FUM002") 
+
+median_rl_info <- median_rl_l_mirabilis %>%
+  filter(Individual_ID == "FUM002") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 60)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/l_mirabilis/l_mirabilis_FUM002_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+GDN001 
+```{r}
+read_length_table <- l_mirabilis_table %>%
+  filter(Individual_ID == "GDN001") 
+
+median_rl_info <- median_rl_l_mirabilis %>%
+  filter(Individual_ID == "GDN001") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_col(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, width = 1) +
+    geom_col(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, width = 1) +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 2)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    #geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/l_mirabilis/l_mirabilis_GDN001_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+
+GOY005  
+```{r}
+read_length_table <- l_mirabilis_table %>%
+  filter(Individual_ID == "GOY005") 
+
+median_rl_info <- median_rl_l_mirabilis %>%
+  filter(Individual_ID == "GOY005") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+     theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 1500)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/l_mirabilis/l_mirabilis_GOY005_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+GOY006 
+```{r}
+read_length_table <- l_mirabilis_table %>%
+  filter(Individual_ID == "GOY006") 
+
+median_rl_info <- median_rl_l_mirabilis %>%
+  filter(Individual_ID == "GOY006") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 300)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/l_mirabilis/l_mirabilis_GOY006_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+PES001 
+```{r}
+read_length_table <- l_mirabilis_table %>%
+  filter(Individual_ID == "PES001") 
+
+median_rl_info <- median_rl_l_mirabilis %>%
+  filter(Individual_ID == "PES001") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 300)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/l_mirabilis/l_mirabilis_PES001_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+VLD001 
+```{r}
+read_length_table <- l_mirabilis_table %>%
+  filter(Individual_ID == "VLD001") 
+
+median_rl_info <- median_rl_l_mirabilis %>%
+  filter(Individual_ID == "VLD001") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+     theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 3)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/l_mirabilis/l_mirabilis_VLD001_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+## Neisseria elongata -> mid GC content (54)
+```{r}
+n_elongata_table <- oral_pcs_rl %>%
+  ungroup() %>%
+  filter(taxonomy == "Neisseria elongata") %>%
+  full_join(., metadata_no_rl %>%
+              select(Sequencing_ID, Library_ID, Individual_ID)) %>%
+  select(-taxonomy)
+```
+
+
+Plot total number of reads per library
+```{r}
+column_colors <- c(double_color, single_color)
+
+reads_histogram <- n_elongata_table %>%
+  select(Sequencing_ID, counts) %>%
+  group_by(Sequencing_ID) %>%
+  mutate(total_counts = sum(counts)) %>%
+  ungroup() %>%
+  select(-counts) %>%
+  unique() %>%
+  mutate(across(where(is.numeric), ~replace_na(.x, 0))) %>%
+  filter(total_counts > 100) %>%
+  inner_join(., metadata_no_rl %>%
+              select(Sequencing_ID, Individual_ID, Strandedness)) %>%
+  ggplot(., aes(x=Strandedness, y=total_counts, fill=Strandedness)) +
+    geom_bar(stat="identity") +
+    theme_minimal() +
+    labs(title = "", x = "Individual ID & Strandedness", y = "Read Count") +
+    guides(fill=guide_legend(title="")) +
+    theme(legend.position="bottom") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    guides(fill = guide_legend(reverse=TRUE)) +
+    scale_fill_discrete(name = "", type = column_colors) +
+    facet_grid(~Individual_ID, scales = "free_x", space = "free") +
+    theme(strip.text.x = element_text(angle = 90, hjust = 1, size = 14),
+          axis.text.x = element_text(size = 12),
+          axis.text.y = element_text(size = 14),
+          strip.text = element_text(size = 12),
+          legend.text = element_text(size = 10),
+          axis.title.y = element_text(size = 14),
+          axis.title.x = element_text(size = 14)) 
+
+reads_histogram
+
+#ggsave("./06_publication/supplemental_figures/npost_species/n_elongata/n_elongata_read_count_bar_plot.pdf", plot = reads_histogram, device = "pdf", scale = 1, width = 10, height = 6, units = c("in"), dpi = 300)
+```
+
+
+```{r}
+median_rl_n_elongata <- median_rl_summary_table(samples, n_elongata_table) %>%
+  pivot_longer(-Individual_ID, values_to = "median_rl", names_to = "Strandedness")
+```
+
+FUM003 and BAN001 do not have reads for this species 
+
+CDM019 
+```{r}
+read_length_table <- n_elongata_table %>%
+  filter(Individual_ID == "CDM019") 
+
+median_rl_info <- median_rl_n_elongata %>%
+  filter(Individual_ID == "CDM019") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 6)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/n_elongata/n_elongata_CDM019_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+CDM020
+```{r}
+read_length_table <- n_elongata_table %>%
+  filter(Individual_ID == "CDM020") 
+
+median_rl_info <- median_rl_n_elongata %>%
+  filter(Individual_ID == "CDM020") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 300)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/n_elongata/n_elongata_CDM020_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+FUM002
+```{r}
+read_length_table <- n_elongata_table %>%
+  filter(Individual_ID == "FUM002") 
+
+median_rl_info <- median_rl_n_elongata %>%
+  filter(Individual_ID == "FUM002") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 60)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/n_elongata/n_elongata_FUM002_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+GDN001
+```{r}
+read_length_table <- n_elongata_table %>%
+  filter(Individual_ID == "GDN001") 
+
+median_rl_info <- median_rl_n_elongata %>%
+  filter(Individual_ID == "GDN001") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_col(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, width = 1) +
+    geom_col(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, width = 1) +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 3)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    #geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/n_elongata/n_elongata_GDN001_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+GOY005
+```{r}
+read_length_table <- n_elongata_table %>%
+  filter(Individual_ID == "GOY005") 
+
+median_rl_info <- median_rl_n_elongata %>%
+  filter(Individual_ID == "GOY005") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 200)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/n_elongata/n_elongata_GOY005_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+GOY006
+```{r}
+read_length_table <- n_elongata_table %>%
+  filter(Individual_ID == "GOY006") 
+
+median_rl_info <- median_rl_n_elongata %>%
+  filter(Individual_ID == "GOY006") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 60)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/n_elongata/n_elongata_GOY006_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+PES001
+```{r}
+read_length_table <- n_elongata_table %>%
+  filter(Individual_ID == "PES001") 
+
+median_rl_info <- median_rl_n_elongata %>%
+  filter(Individual_ID == "PES001") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 20)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/n_elongata/n_elongata_PES001_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+VLD001
+```{r}
+read_length_table <- n_elongata_table %>%
+  filter(Individual_ID == "VLD001") 
+
+median_rl_info <- median_rl_n_elongata %>%
+  filter(Individual_ID == "VLD001") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_col(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, width = 1) +
+    geom_col(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, width = 1) +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 1)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    #geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/n_elongata/n_elongata_VLD001_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+## Aggregatibacter kilianii -> low GC content (43)
+```{r}
+a_kilianii_table <- oral_pcs_rl %>%
+  ungroup() %>%
+  filter(taxonomy == "Aggregatibacter kilianii") %>%
+  full_join(., metadata_no_rl %>%
+              select(Sequencing_ID, Library_ID, Individual_ID)) %>%
+  select(-taxonomy)
+
+median_rl_a_kilianii <- median_rl_summary_table(samples, a_kilianii_table) %>%
+  pivot_longer(-Individual_ID, values_to = "median_rl", names_to = "Strandedness")
+```
+
+
+Plot total number of reads per library
+```{r}
+column_colors <- c(double_color, single_color)
+
+reads_histogram <- a_kilianii_table %>%
+  select(Sequencing_ID, counts) %>%
+  group_by(Sequencing_ID) %>%
+  mutate(total_counts = sum(counts)) %>%
+  ungroup() %>%
+  select(-counts) %>%
+  unique() %>%
+  mutate(across(where(is.numeric), ~replace_na(.x, 0))) %>%
+  filter(total_counts > 100) %>%
+  inner_join(., metadata_no_rl %>%
+              select(Sequencing_ID, Individual_ID, Strandedness)) %>%
+  ggplot(., aes(x=Strandedness, y=total_counts, fill=Strandedness)) +
+    geom_bar(stat="identity") +
+    theme_minimal() +
+    labs(title = "", x = "Individual ID & Strandedness", y = "Read Count") +
+    guides(fill=guide_legend(title="")) +
+    theme(legend.position="bottom") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    guides(fill = guide_legend(reverse=TRUE)) +
+    scale_fill_discrete(name = "", type = column_colors) +
+    facet_grid(~Individual_ID, scales = "free_x", space = "free") +
+    theme(strip.text.x = element_text(angle = 90, hjust = 1, size = 14),
+          axis.text.x = element_text(size = 12),
+          axis.text.y = element_text(size = 14),
+          strip.text = element_text(size = 12),
+          legend.text = element_text(size = 10),
+          axis.title.y = element_text(size = 14),
+          axis.title.x = element_text(size = 14)) 
+
+reads_histogram
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_kilianii/a_kilianii_read_count_bar_plot.pdf", plot = reads_histogram, device = "pdf", scale = 1, width = 10, height = 6, units = c("in"), dpi = 300)
+```
+
+BAN001, FUM003, GDN001 dsLib, and VLD001 dsLib do not have this species 
+
+CDM019 
+```{r}
+read_length_table <- a_kilianii_table %>%
+  filter(Individual_ID == "CDM019") 
+
+median_rl_info <- median_rl_a_kilianii %>%
+  filter(Individual_ID == "CDM019") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 3)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_kilianii/a_kilianii_CDM019_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+CDM020
+```{r}
+read_length_table <- a_kilianii_table %>%
+  filter(Individual_ID == "CDM020") 
+
+median_rl_info <- median_rl_a_kilianii %>%
+  filter(Individual_ID == "CDM020") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 40)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_kilianii/a_kilianii_CDM020_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+FUM002
+```{r}
+read_length_table <- a_kilianii_table %>%
+  filter(Individual_ID == "FUM002") 
+
+median_rl_info <- median_rl_a_kilianii %>%
+  filter(Individual_ID == "FUM002") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 15)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_kilianii/a_kilianii_FUM002_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+GDN001 - only ssLib
+```{r}
+read_length_table <- a_kilianii_table %>%
+  filter(Individual_ID == "GDN001") 
+
+median_rl_info <- median_rl_a_kilianii %>%
+  filter(Individual_ID == "GDN001") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    #geom_col(data = . %>% filter(Strandedness == "Double"),
+    #          aes(x = read_length, y = counts),
+    #          fill = "#04387a", alpha = 1, width = 1) +
+    geom_col(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, width = 1) +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 1)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    #geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_kilianii/a_kilianii_GDN001_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+GOY005
+```{r}
+read_length_table <- a_kilianii_table %>%
+  filter(Individual_ID == "GOY005") 
+
+median_rl_info <- median_rl_a_kilianii %>%
+  filter(Individual_ID == "GOY005") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 800)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_kilianii/a_kilianii_GOY005_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+GOY006
+```{r}
+read_length_table <- a_kilianii_table %>%
+  filter(Individual_ID == "GOY006") 
+
+median_rl_info <- median_rl_a_kilianii %>%
+  filter(Individual_ID == "GOY006") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 50)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_kilianii/a_kilianii_GOY006_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+PES001
+```{r}
+read_length_table <- a_kilianii_table %>%
+  filter(Individual_ID == "PES001") 
+
+median_rl_info <- median_rl_a_kilianii %>%
+  filter(Individual_ID == "PES001") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 25)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_kilianii/a_kilianii_PES001_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+VLD001 - only ssLibs
+```{r}
+read_length_table <- a_kilianii_table %>%
+  filter(Individual_ID == "VLD001") 
+
+median_rl_info <- median_rl_a_kilianii %>%
+  filter(Individual_ID == "VLD001") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    #geom_bar(data = . %>% filter(Strandedness == "Double"),
+    #          aes(x = read_length, y = counts),
+    #          fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_col(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, width = 1) +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 1)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    #geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_kilianii/a_kilianii_VLD001_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+## Actinomyces dentalis -> high GC content (73)
+```{r}
+a_dentalis_table <- oral_pcs_rl %>%
+  ungroup() %>%
+  filter(taxonomy == "Actinomyces dentalis") %>%
+  full_join(., metadata_no_rl %>%
+              select(Sequencing_ID, Library_ID, Individual_ID)) %>%
+  select(-taxonomy)
+```
+
+Plot total number of reads per library
+```{r}
+column_colors <- c(double_color, single_color)
+
+reads_histogram <- a_dentalis_table %>%
+  select(Sequencing_ID, counts) %>%
+  group_by(Sequencing_ID) %>%
+  mutate(total_counts = sum(counts)) %>%
+  ungroup() %>%
+  select(-counts) %>%
+  unique() %>%
+  mutate(across(where(is.numeric), ~replace_na(.x, 0))) %>%
+  filter(total_counts > 100) %>%
+  inner_join(., metadata_no_rl %>%
+              select(Sequencing_ID, Individual_ID, Strandedness)) %>%
+  ggplot(., aes(x=Strandedness, y=total_counts, fill=Strandedness)) +
+    geom_bar(stat="identity") +
+    theme_minimal() +
+    labs(title = "", x = "Individual ID & Strandedness", y = "Read Count") +
+    guides(fill=guide_legend(title="")) +
+    theme(legend.position="bottom") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    guides(fill = guide_legend(reverse=TRUE)) +
+    scale_fill_discrete(name = "", type = column_colors) +
+    facet_grid(~Individual_ID, scales = "free_x", space = "free") +
+    theme(strip.text.x = element_text(angle = 90, hjust = 1, size = 14),
+          axis.text.x = element_text(size = 12),
+          axis.text.y = element_text(size = 14),
+          strip.text = element_text(size = 12),
+          legend.text = element_text(size = 10),
+          axis.title.y = element_text(size = 14),
+          axis.title.x = element_text(size = 14)) 
+
+reads_histogram
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_dentalis/a_dentalis_read_count_bar_plot.pdf", plot = reads_histogram, device = "pdf", scale = 1, width = 10, height = 6, units = c("in"), dpi = 300)
+```
+
+
+```{r}
+median_rl_a_dentalis <- median_rl_summary_table(samples, a_dentalis_table) %>%
+  pivot_longer(-Individual_ID, values_to = "median_rl", names_to = "Strandedness")
+```
+
+FUM003 and BAN001 do not have reads for this species 
+
+CDM019
+```{r}
+read_length_table <- a_dentalis_table %>%
+  filter(Individual_ID == "CDM019") 
+
+median_rl_info <- median_rl_a_dentalis %>%
+  filter(Individual_ID == "CDM019") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100000) %>%
+  #mutate(Length = as.numeric(Length)) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 50)) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_dentalis/a_dentalis_CDM019_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+CDM020
+```{r}
+read_length_table <- a_dentalis_table %>%
+  filter(Individual_ID == "CDM020") 
+
+median_rl_info <- median_rl_a_dentalis %>%
+  filter(Individual_ID == "CDM020") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 1500)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_dentalis/a_dentalis_CDM020_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+FUM002    
+```{r}
+read_length_table <- a_dentalis_table %>%
+  filter(Individual_ID == "FUM002") 
+
+median_rl_info <- median_rl_a_dentalis %>%
+  filter(Individual_ID == "FUM002") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 60)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_dentalis/a_dentalis_FUM002_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+GDN001 
+```{r}
+read_length_table <- a_dentalis_table %>%
+  filter(Individual_ID == "GDN001") 
+
+median_rl_info <- median_rl_a_dentalis %>%
+  filter(Individual_ID == "GDN001") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 60)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_dentalis/a_dentalis_GDN001_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+
+GOY005  
+```{r}
+read_length_table <- a_dentalis_table %>%
+  filter(Individual_ID == "GOY005") 
+
+median_rl_info <- median_rl_a_dentalis %>%
+  filter(Individual_ID == "GOY005") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+     theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 100)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_dentalis/a_dentalis_GOY005_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+GOY006 
+```{r}
+read_length_table <- a_dentalis_table %>%
+  filter(Individual_ID == "GOY006") 
+
+median_rl_info <- median_rl_a_dentalis %>%
+  filter(Individual_ID == "GOY006") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 300)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_dentalis/a_dentalis_GOY006_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+PES001 
+```{r}
+read_length_table <- a_dentalis_table %>%
+  filter(Individual_ID == "PES001") 
+
+median_rl_info <- median_rl_a_dentalis %>%
+  filter(Individual_ID == "PES001") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 300)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_dentalis/a_dentalis_PES001_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+VLD001 
+```{r}
+read_length_table <- a_dentalis_table %>%
+  filter(Individual_ID == "VLD001") 
+
+median_rl_info <- median_rl_a_dentalis %>%
+  filter(Individual_ID == "VLD001") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+     theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 1000)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_dentalis/a_dentalis_VLD001_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+## Flexilinea sp001717545 -> mid GC content (55)
+```{r}
+flexilinea_table <- oral_pcs_rl %>%
+  ungroup() %>%
+  filter(taxonomy == "Flexilinea sp001717545") %>%
+  full_join(., metadata_no_rl %>%
+              select(Sequencing_ID, Library_ID, Individual_ID)) %>%
+  select(-taxonomy)
+```
+
+Plot total number of reads per library
+```{r}
+column_colors <- c(double_color, single_color)
+
+reads_histogram <- flexilinea_table %>%
+  select(Sequencing_ID, counts) %>%
+  group_by(Sequencing_ID) %>%
+  mutate(total_counts = sum(counts)) %>%
+  ungroup() %>%
+  select(-counts) %>%
+  unique() %>%
+  mutate(across(where(is.numeric), ~replace_na(.x, 0))) %>%
+  filter(total_counts > 100) %>%
+  inner_join(., metadata_no_rl %>%
+              select(Sequencing_ID, Individual_ID, Strandedness)) %>%
+  ggplot(., aes(x=Strandedness, y=total_counts, fill=Strandedness)) +
+    geom_bar(stat="identity") +
+    theme_minimal() +
+    labs(title = "", x = "Individual ID & Strandedness", y = "Read Count") +
+    guides(fill=guide_legend(title="")) +
+    theme(legend.position="bottom") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    guides(fill = guide_legend(reverse=TRUE)) +
+    scale_fill_discrete(name = "", type = column_colors) +
+    facet_grid(~Individual_ID, scales = "free_x", space = "free") +
+    theme(strip.text.x = element_text(angle = 90, hjust = 1, size = 14),
+          axis.text.x = element_text(size = 12),
+          axis.text.y = element_text(size = 14),
+          strip.text = element_text(size = 12),
+          legend.text = element_text(size = 10),
+          axis.title.y = element_text(size = 14),
+          axis.title.x = element_text(size = 14)) 
+
+reads_histogram
+
+#ggsave("./06_publication/supplemental_figures/npost_species/flexilinea/flexilinea_read_count_bar_plot.pdf", plot = reads_histogram, device = "pdf", scale = 1, width = 10, height = 6, units = c("in"), dpi = 300)
+```
+
+
+```{r}
+median_rl_flexilinea <- median_rl_summary_table(samples, flexilinea_table) %>%
+  pivot_longer(-Individual_ID, values_to = "median_rl", names_to = "Strandedness")
+```
+
+FUM003 and BAN001 do not have reads for this species 
+
+CDM019
+```{r}
+read_length_table <- flexilinea_table %>%
+  filter(Individual_ID == "CDM019") 
+
+median_rl_info <- median_rl_flexilinea %>%
+  filter(Individual_ID == "CDM019") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100000) %>%
+  #mutate(Length = as.numeric(Length)) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    #expand_limits(y = c(0, 50)) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/flexilinea/flexilinea_CDM019_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+CDM020
+```{r}
+read_length_table <- flexilinea_table %>%
+  filter(Individual_ID == "CDM020") 
+
+median_rl_info <- median_rl_flexilinea %>%
+  filter(Individual_ID == "CDM020") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 1500)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/flexilinea/flexilinea_CDM020_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+FUM002    
+```{r}
+read_length_table <- flexilinea_table %>%
+  filter(Individual_ID == "FUM002") 
+
+median_rl_info <- median_rl_flexilinea %>%
+  filter(Individual_ID == "FUM002") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    #expand_limits(y = c(0, 60)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/flexilinea/flexilinea_FUM002_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+GDN001 
+```{r}
+read_length_table <- flexilinea_table %>%
+  filter(Individual_ID == "GDN001") 
+
+median_rl_info <- median_rl_flexilinea %>%
+  filter(Individual_ID == "GDN001") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    #expand_limits(y = c(0, 60)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/flexilinea/flexilinea_GDN001_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+GOY005  
+```{r}
+read_length_table <- flexilinea_table %>%
+  filter(Individual_ID == "GOY005") 
+
+median_rl_info <- median_rl_flexilinea %>%
+  filter(Individual_ID == "GOY005") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+     theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 50)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/flexilinea/flexilinea_GOY005_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+GOY006 
+```{r}
+read_length_table <- flexilinea_table %>%
+  filter(Individual_ID == "GOY006") 
+
+median_rl_info <- median_rl_flexilinea %>%
+  filter(Individual_ID == "GOY006") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    #expand_limits(y = c(0, 300)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/flexilinea/flexilinea_GOY006_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+PES001 
+```{r}
+read_length_table <- flexilinea_table %>%
+  filter(Individual_ID == "PES001") 
+
+median_rl_info <- median_rl_flexilinea %>%
+  filter(Individual_ID == "PES001") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 300)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/flexilinea/flexilinea_PES001_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+VLD001 
+```{r}
+read_length_table <- flexilinea_table %>%
+  filter(Individual_ID == "VLD001") 
+
+median_rl_info <- median_rl_flexilinea %>%
+  filter(Individual_ID == "VLD001") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+     theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    #expand_limits(y = c(0, 1000)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/flexilinea/flexilinea_VLD001_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+## Methanobrevibacter A oralis -> low GC content (27.5)
+```{r}
+m_oralis_table <- oral_pcs_rl %>%
+  ungroup() %>%
+  filter(taxonomy == "Methanobrevibacter A oralis") %>%
+  full_join(., metadata_no_rl %>%
+              select(Sequencing_ID, Library_ID, Individual_ID)) %>%
+  select(-taxonomy)
+```
+
+Plot total number of reads per library
+```{r}
+column_colors <- c(double_color, single_color)
+
+reads_histogram <- m_oralis_table %>%
+  select(Sequencing_ID, counts) %>%
+  group_by(Sequencing_ID) %>%
+  mutate(total_counts = sum(counts)) %>%
+  ungroup() %>%
+  select(-counts) %>%
+  unique() %>%
+  mutate(across(where(is.numeric), ~replace_na(.x, 0))) %>%
+  filter(total_counts > 100) %>%
+  inner_join(., metadata_no_rl %>%
+              select(Sequencing_ID, Individual_ID, Strandedness)) %>%
+  ggplot(., aes(x=Strandedness, y=total_counts, fill=Strandedness)) +
+    geom_bar(stat="identity") +
+    theme_minimal() +
+    labs(title = "", x = "Individual ID & Strandedness", y = "Read Count") +
+    guides(fill=guide_legend(title="")) +
+    theme(legend.position="bottom") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    guides(fill = guide_legend(reverse=TRUE)) +
+    scale_fill_discrete(name = "", type = column_colors) +
+    facet_grid(~Individual_ID, scales = "free_x", space = "free") +
+    theme(strip.text.x = element_text(angle = 90, hjust = 1, size = 14),
+          axis.text.x = element_text(size = 12),
+          axis.text.y = element_text(size = 14),
+          strip.text = element_text(size = 12),
+          legend.text = element_text(size = 10),
+          axis.title.y = element_text(size = 14),
+          axis.title.x = element_text(size = 14)) 
+
+reads_histogram
+
+#ggsave("./06_publication/supplemental_figures/npost_species/m_oralis/m_oralis_read_count_bar_plot.pdf", plot = reads_histogram, device = "pdf", scale = 1, width = 10, height = 6, units = c("in"), dpi = 300)
+```
+
+
+```{r}
+median_rl_m_oralis <- median_rl_summary_table(samples, m_oralis_table) %>%
+  pivot_longer(-Individual_ID, values_to = "median_rl", names_to = "Strandedness")
+```
+
+FUM003 and BAN001 do not have reads for this species 
+
+CDM019
+```{r}
+read_length_table <- m_oralis_table %>%
+  filter(Individual_ID == "CDM019") 
+
+median_rl_info <- median_rl_m_oralis %>%
+  filter(Individual_ID == "CDM019") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100000) %>%
+  #mutate(Length = as.numeric(Length)) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    #expand_limits(y = c(0, 50)) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/m_oralis/m_oralis_CDM019_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+CDM020
+```{r}
+read_length_table <- m_oralis_table %>%
+  filter(Individual_ID == "CDM020") 
+
+median_rl_info <- median_rl_m_oralis %>%
+  filter(Individual_ID == "CDM020") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    #expand_limits(y = c(0, 1500)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/m_oralis/m_oralis_CDM020_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+FUM002    
+```{r}
+read_length_table <- m_oralis_table %>%
+  filter(Individual_ID == "FUM002") 
+
+median_rl_info <- median_rl_m_oralis %>%
+  filter(Individual_ID == "FUM002") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    expand_limits(y = c(0, 60)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/m_oralis/m_oralis_FUM002_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+GDN001 
+```{r}
+read_length_table <- m_oralis_table %>%
+  filter(Individual_ID == "GDN001") 
+
+median_rl_info <- median_rl_m_oralis %>%
+  filter(Individual_ID == "GDN001") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    #expand_limits(y = c(0, 60)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/m_oralis/m_oralis_GDN001_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+GOY005  
+```{r}
+read_length_table <- m_oralis_table %>%
+  filter(Individual_ID == "GOY005") 
+
+median_rl_info <- median_rl_m_oralis %>%
+  filter(Individual_ID == "GOY005") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+     theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    #expand_limits(y = c(0, 100)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/m_oralis/m_oralis_GOY005_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+GOY006 
+```{r}
+read_length_table <- m_oralis_table %>%
+  filter(Individual_ID == "GOY006") 
+
+median_rl_info <- median_rl_m_oralis %>%
+  filter(Individual_ID == "GOY006") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    #expand_limits(y = c(0, 300)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/m_oralis/m_oralis_GOY006_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+PES001 
+```{r}
+read_length_table <- m_oralis_table %>%
+  filter(Individual_ID == "PES001") 
+
+median_rl_info <- median_rl_m_oralis %>%
+  filter(Individual_ID == "PES001") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    #expand_limits(y = c(0, 300)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/m_oralis/m_oralis_PES001_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+VLD001 
+```{r}
+read_length_table <- m_oralis_table %>%
+  filter(Individual_ID == "VLD001") 
+
+median_rl_info <- median_rl_m_oralis %>%
+  filter(Individual_ID == "VLD001") %>%
+  dplyr::select(Strandedness, median_rl) 
+
+rl_plot <- read_length_table %>%
+  #mutate(counts = counts / 100) %>%
+  ggplot(aes(x = read_length, y = counts, fill = Strandedness, linetype = Strandedness)) +
+    geom_bar(data = . %>% filter(Strandedness == "Double"),
+              aes(x = read_length, y = counts),
+              fill = "#04387a", alpha = 1, stat = "identity") +
+    geom_bar(data = . %>% filter(Strandedness == "Single"),
+              aes(x = read_length, y = counts),
+              fill = "#6fbfdc", alpha = 0.6, stat = "identity") +
+    theme_minimal() +
+    #labs(x = "Read Length (bp)", y = expression(`Read Count` ~ (x10^2))) + 
+    labs(x = "Read Length (bp)", y = "Read Count") +
+    guides(fill = guide_legend(title = "Strandedness"),
+           linetype = guide_legend(title = "Strandedness")) +
+    #scale_x_discrete(breaks = c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140), 
+    #                 labels = c("10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140")) +
+    scale_x_continuous(
+        limits = c(30, 150),
+        breaks = seq(30, 140, by = 10),
+        expand = c(0, 0)) +    
+     theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 20),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), 
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) + 
+    #expand_limits(y = c(0, 1000)) +
+    #scale_y_continuous(breaks = c(0, 0.5, 1, 1.5, 2), 
+                       #labels = c("0", "0.5", "1", "1.5", "2")) +
+    geom_vline(data = median_rl_info, aes(xintercept = median_rl, linetype = Strandedness), linewidth = 0.5, color = "red") +
+    scale_linetype_manual(values = c("Double" = "solid", "Single" = "dashed")) 
+  
+rl_plot
+
+#ggsave("./06_publication/supplemental_figures/npost_species/m_oralis/m_oralis_VLD001_rl.pdf", plot = rl_plot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+#Damage plots
+```{r}
+#colors for well-preserved samples
+
+sample_colors <- c("#88ccef", "#44aa9a", "#147733", "#342288", "#ddcc77", "#999934", "#cc6777", "#882355", "#aa4599", "#dddddd")
+```
+
+```{r}
+#well-preserved samples
+
+metadata_wp <- metadata_no_rl %>%
+  filter(kraken2_preservation == "Good")
+  
+wp_samples <- metadata_wp %>%
+  select(Sequencing_ID) %>%
+  pull()
+
+```
+
+##Individual damage plots function
+```{r}
+double_color <- "#04387a"
+single_color <- "#6fbfdc"
+
+strandedness_colors <- c(double_color, single_color)
+
+individual_damage_plots <- function(combined_5_prime_table, combined_3_prime_table, sample_list, folder_path, species) {
+  #Find the max y-axis value
+  find_max_y <- function(combined_5_prime_table, combined_3_prime_table, sample) {
+    max_y_value <- combined_5_prime_table %>%
+      full_join(., combined_3_prime_table) %>%
+      filter(Individual_ID == sample) %>%
+      summarize(max_frequency = max(frequency, na.rm = TRUE)) %>%
+      select(max_frequency) %>%
+      unique() %>%
+      pull(max_frequency)
+  }
+  
+  #5' prime plot function
+  create_5_prime_plot <- function(combined_5_prime_table, sample) {
+    combined_5_prime_plot <- combined_5_prime_table %>%
+      filter(Individual_ID == sample) %>%
+      ggplot(aes(x=position, y=frequency, color = Strandedness)) +
+        geom_line() +
+        scale_color_manual(values = strandedness_colors) +
+        labs(x = "Position", y = "Frequency") +
+        theme_minimal() +
+        theme(legend.position = "right",
+              axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+              axis.text.y = element_text(size = 22), 
+              axis.title = element_text(size = 22),  
+              legend.text = element_text(size = 16),  
+              legend.title = element_text(size = 20),
+              plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) +
+      expand_limits(y = c(0, max_y_value))
+  }
+  
+   #3' prime plot function
+  create_3_prime_plot <- function(combined_3_prime_table, sample) {
+    combined_3_prime_plot <- combined_3_prime_table %>%
+      filter(Individual_ID == sample) %>%
+      mutate(position = (position*-1)) %>%
+      ggplot(aes(x=position, y=frequency, color = Strandedness)) +
+      geom_line() +
+      scale_y_continuous(
+        name = NULL,                  
+        sec.axis = dup_axis(name = "Frequency")) +
+        labs(x = "Position") +
+        scale_color_manual(values = strandedness_colors) +
+        theme_minimal() +
+      theme(
+        legend.position = "right",
+        axis.text.x = element_text(angle = 90, hjust = 1, size = 20),
+        axis.text.y.left  = element_blank(),   # hide left labels
+        axis.ticks.y.left = element_blank(),
+        axis.text.y.right = element_text(size = 22),
+        axis.title.y.right = element_text(size = 22),
+        axis.title = element_text(size = 22),
+        legend.text = element_text(size = 16),
+        legend.title = element_text(size = 20),
+        plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) +
+      expand_limits(y = c(0, max_y_value))
+  }
+  
+  #Combine the 5' and 3' plots
+  create_combined_damage_plot <- function(combined_5_prime_plot, create_3_prime_plot, plot_title) {
+  damage_plot <- ggarrange(
+    combined_5_prime_plot, combined_3_prime_plot,
+    labels = c("5'", "3'"), 
+    ncol = 2, nrow = 1,  common.legend = TRUE, legend = "right")
+  }
+  
+  #Iterate over each sample in sample_list to create a plot for each Individual_ID
+  for (sample in sample_list) {
+    
+    #Find the max y-axis value
+    max_y_value <- find_max_y(combined_5_prime_table, combined_3_prime_table, sample)
+    
+    #Create a 5' and 3' plot for each Individual
+    plot_5_prime <- create_5_prime_plot(combined_5_prime_table, sample)
+    plot_3_prime <- create_3_prime_plot(combined_3_prime_table, sample)
+    
+   #Combine the 5' and 3' plots
+    damage_plot_combined <- ggarrange(
+      plot_5_prime, plot_3_prime,
+      labels = c("5'", "3'"), 
+      ncol = 2, nrow = 1,  common.legend = TRUE, legend = "right", align = "hv")
+  
+    #Annotate the plot to add the Individual_ID 
+    damage_plot_combined_annotated <- annotate_figure(damage_plot_combined, top = text_grob(paste0(sample), face = "bold", size = 22))
+    
+    #Save the combined plot to a single file for each sample
+    ggsave(
+      filename = file.path(folder_path, paste0(sample, "_", species, "_damage_plot.pdf")), 
+      plot = damage_plot_combined_annotated, 
+      device = "pdf", 
+      scale = 1, 
+      width = 10, 
+      height = 4, 
+      units = "in", 
+      dpi = 300
+    )
+  }
+  
+}
+```
+
+## Lautropia mirabilis
+###dsLibs
+```{r}
+files_5_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/lautropia_mirabilis", pattern = "5pCtoT_freq.txt", recursive = TRUE, full.names = T)
+
+
+smiley_plot_table_5_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/lautropia_mirabilis/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_l_mirabilis_q25l30_rmdup/5pCtoT_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Double")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_5_prime_dsLibs <- smiley_plot_table_5_prime(files_5_prime)
+
+```
+
+
+```{r}
+files_3_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/lautropia_mirabilis", pattern = "3pGtoA_freq.txt", recursive = TRUE, full.names = T)
+
+smiley_plot_table_3_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/lautropia_mirabilis/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_l_mirabilis_q25l30_rmdup/3pGtoA_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Double")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_3_prime_dsLibs <- smiley_plot_table_3_prime(files_3_prime)
+
+```
+
+
+```{r}
+dsLib_5_prime <- table_5_prime %>%
+  filter(Strandedness == "Double") %>%
+  ggplot(aes(x=position, y=frequency, color = Individual_ID)) +
+  geom_line() +
+  scale_color_manual(values = sample_colors) +
+  labs(x = "Position", y = "Frequency") +
+  theme_minimal() +
+  theme(legend.position = "right",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 16),  
+          legend.title = element_text(size = 20),
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) +
+  expand_limits(y = c(0, 0.4))
+
+dsLib_5_prime 
+```
+
+```{r}
+dsLib_3_prime <- table_3_prime %>%
+  mutate(position = (position*-1)) %>%
+  filter(Strandedness == "Double") %>%
+  ggplot(aes(x=position, y=frequency, color = Individual_ID)) +
+  geom_line() +
+  scale_y_continuous(
+    name = NULL,                  
+    sec.axis = dup_axis(name = "Frequency")) +
+  labs(x = "Position") +
+  scale_color_manual(values = sample_colors) +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 20),
+    axis.text.y.left  = element_blank(),   # hide left labels
+    axis.ticks.y.left = element_blank(),
+    axis.text.y.right = element_text(size = 22),
+    axis.title.y.right = element_text(size = 22),
+     axis.title = element_text(size = 22),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 20),
+    plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt"))
+
+
+dsLib_3_prime 
+```
+
+
+```{r}
+summary_plots_dsLibs <- ggarrange(
+  dsLib_5_prime, dsLib_3_prime,
+  labels = c("", ""), 
+  ncol = 2, nrow = 1,  common.legend = TRUE, legend = "right"
+)
+
+summary_plots_dsLibs
+
+#ggsave("./06_publication/supplemental_figures/npost_species/l_mirabilis/l_mirabilis_dsLib_damage.pdf", plot = summary_plots_dsLibs, device = "pdf", scale = 1, width = 10, height = 4, units = c("in"), dpi = 300)
+```
+
+
+###ssLibs
+```{r}
+files_5_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/lautropia_mirabilis", pattern = "5pCtoT_freq.txt", recursive = TRUE, full.names = T)
+
+
+smiley_plot_table_5_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/lautropia_mirabilis/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_l_mirabilis_q25l30_rmdup/5pCtoT_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+    filter(Strandedness == "Single")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_5_prime_ssLibs <- smiley_plot_table_5_prime(files_5_prime)
+
+```
+
+
+```{r}
+files_3_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/lautropia_mirabilis", pattern = "3pGtoA_freq.txt", recursive = TRUE, full.names = T)
+
+smiley_plot_table_3_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/lautropia_mirabilis/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_l_mirabilis_q25l30_rmdup/3pGtoA_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) 
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_3_prime_ssLibs <- smiley_plot_table_3_prime(files_3_prime)
+
+```
+
+
+```{r}
+ssLib_5_prime <- table_5_prime_ssLibs %>%
+  ggplot(aes(x=position, y=frequency, color = Individual_ID)) +
+  geom_line() +
+  scale_color_manual(values = sample_colors) +
+  labs(x = "Position", y = "Frequency") +
+  theme_minimal() +
+  theme(legend.position = "right",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 16),  
+          legend.title = element_text(size = 20),
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) +
+  expand_limits(y = c(0, 0.4))
+
+ssLib_5_prime 
+```
+
+```{r}
+ssLib_3_prime <- table_3_prime_ssLibs %>%
+  mutate(position = (position*-1)) %>%
+  ggplot(aes(x=position, y=frequency, color = Individual_ID)) +
+  geom_line() +
+  scale_y_continuous(
+    name = NULL,                  
+    sec.axis = dup_axis(name = "Frequency")) +
+  labs(x = "Position") +
+  scale_color_manual(values = sample_colors) +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 20),
+    axis.text.y.left  = element_blank(),   # hide left labels
+    axis.ticks.y.left = element_blank(),
+    axis.text.y.right = element_text(size = 22),
+    axis.title.y.right = element_text(size = 22),
+     axis.title = element_text(size = 22),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 20),
+    plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) +
+  expand_limits(y = c(0, 0.4))
+
+
+ssLib_3_prime 
+```
+
+
+```{r}
+summary_plots_ssLibs <- ggarrange(
+  ssLib_5_prime, ssLib_3_prime,
+  labels = c("", ""), 
+  ncol = 2, nrow = 1,  common.legend = TRUE, legend = "right"
+)
+
+summary_plots_ssLibs
+
+#ggsave("./06_publication/supplemental_figures/npost_species/l_mirabilis/l_mirabilis_ssLib_damage.pdf", plot = summary_plots_ssLibs, device = "pdf", scale = 1, width = 10, height = 4, units = c("in"), dpi = 300)
+```
+
+###Individual plots
+```{r}
+combined_5_prime <- table_5_prime_ssLibs %>%
+  full_join(., table_5_prime_dsLibs) 
+
+combined_3_prime <- table_3_prime_ssLibs %>%
+  full_join(., table_3_prime_dsLibs)
+```
+
+```{r}
+samples <- c("CDM019", "CDM020", "FUM002", "GOY005", "GOY006", "PES001")
+
+individual_damage_plots(combined_5_prime, combined_3_prime, samples, "./06_publication/supplemental_figures/npost_species/l_mirabilis/damage_plots", "l_mirabilis")
+```
+
+## Neisseria elongata
+###dsLibs
+```{r}
+files_5_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/neisseria_elongata", pattern = "5pCtoT_freq.txt", recursive = TRUE, full.names = T)
+
+
+smiley_plot_table_5_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/neisseria_elongata/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_n_elongata_q25l30_rmdup/5pCtoT_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Double")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_5_prime_dsLibs <- smiley_plot_table_5_prime(files_5_prime)
+
+```
+
+
+```{r}
+files_3_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/neisseria_elongata", pattern = "3pGtoA_freq.txt", recursive = TRUE, full.names = T)
+
+smiley_plot_table_3_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/neisseria_elongata/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_n_elongata_q25l30_rmdup/3pGtoA_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Double")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_3_prime_dsLibs <- smiley_plot_table_3_prime(files_3_prime)
+
+```
+
+
+```{r}
+dsLib_5_prime <- table_5_prime %>%
+  filter(Strandedness == "Double") %>%
+  ggplot(aes(x=position, y=frequency, color = Individual_ID)) +
+  geom_line() +
+  scale_color_manual(values = sample_colors) +
+  labs(x = "Position", y = "Frequency") +
+  theme_minimal() +
+  theme(legend.position = "right",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 16),  
+          legend.title = element_text(size = 20),
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) +
+  expand_limits(y = c(0, 0.4))
+
+dsLib_5_prime 
+```
+
+
+```{r}
+dsLib_3_prime <- table_3_prime %>%
+  mutate(position = (position*-1)) %>%
+  filter(Strandedness == "Double") %>%
+  ggplot(aes(x=position, y=frequency, color = Individual_ID)) +
+  geom_line() +
+  scale_y_continuous(
+    name = NULL,                  
+    sec.axis = dup_axis(name = "Frequency")) +
+  labs(x = "Position") +
+  scale_color_manual(values = sample_colors) +
+  theme_minimal() +
+  theme(
+    lGCF_000429225.1egend.position = "right",
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 20),
+    axis.text.y.left  = element_blank(),   # hide left labels
+    axis.ticks.y.left = element_blank(),
+    axis.text.y.right = element_text(size = 22),
+    axis.title.y.right = element_text(size = 22),
+     axis.title = element_text(size = 22),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 20),
+    plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt"))
+
+
+dsLib_3_prime 
+```
+
+
+```{r}
+summary_plots_dsLibs <- ggarrange(
+  dsLib_5_prime, dsLib_3_prime,
+  labels = c("", ""), 
+  ncol = 2, nrow = 1,  common.legend = TRUE, legend = "right"
+)
+
+summary_plots_dsLibs
+
+#ggsave("./06_publication/supplemental_figures/npost_species/n_elongata/n_elongata_dsLib_damage.pdf", plot = summary_plots_dsLibs, device = "pdf", scale = 1, width = 10, height = 4, units = c("in"), dpi = 300)
+```
+
+
+###ssLibs
+```{r}
+files_5_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/neisseria_elongata", pattern = "5pCtoT_freq.txt", recursive = TRUE, full.names = T)
+
+
+smiley_plot_table_5_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/neisseria_elongata/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_n_elongata_q25l30_rmdup/5pCtoT_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Single")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_5_prime_ssLibs <- smiley_plot_table_5_prime(files_5_prime)
+
+```
+
+
+```{r}
+files_3_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/neisseria_elongata", pattern = "3pGtoA_freq.txt", recursive = TRUE, full.names = T)
+
+smiley_plot_table_3_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/neisseria_elongata/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_n_elongata_q25l30_rmdup/3pGtoA_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Single")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_3_prime_ssLibs <- smiley_plot_table_3_prime(files_3_prime)
+
+```
+
+
+```{r}
+ssLib_5_prime <- table_5_prime_ssLibs %>%
+  ggplot(aes(x=position, y=frequency, color = Individual_ID)) +
+  geom_line() +
+  scale_color_manual(values = sample_colors) +
+  labs(x = "Position", y = "Frequency") +
+  theme_minimal() +
+  theme(legend.position = "right",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 16),  
+          legend.title = element_text(size = 20),
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) +
+  expand_limits(y = c(0, 0.4))
+
+ssLib_5_prime 
+```
+
+
+```{r}
+ssLib_3_prime <- table_3_prime_ssLibs %>%
+  mutate(position = (position*-1)) %>%
+  ggplot(aes(x=position, y=frequency, color = Individual_ID)) +
+  geom_line() +
+  scale_y_continuous(
+    name = NULL,                  
+    sec.axis = dup_axis(name = "Frequency")) +
+  labs(x = "Position") +
+  scale_color_manual(values = sample_colors) +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 20),
+    axis.text.y.left  = element_blank(),   # hide left labels
+    axis.ticks.y.left = element_blank(),
+    axis.text.y.right = element_text(size = 22),
+    axis.title.y.right = element_text(size = 22),
+     axis.title = element_text(size = 22),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 20),
+    plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) +
+  expand_limits(y = c(0, 0.4))
+
+
+ssLib_3_prime 
+```
+
+
+```{r}
+summary_plots_ssLibs <- ggarrange(
+  ssLib_5_prime, ssLib_3_prime,
+  labels = c("", ""), 
+  ncol = 2, nrow = 1,  common.legend = TRUE, legend = "right"
+)
+
+summary_plots_ssLibs
+
+#ggsave("./06_publication/supplemental_figures/npost_species/n_elongata/n_elongata_ssLib_damage.pdf", plot = summary_plots_ssLibs, device = "pdf", scale = 1, width = 10, height = 4, units = c("in"), dpi = 300)
+```
+
+###Individual plots
+```{r}
+combined_5_prime <- table_5_prime_ssLibs %>%
+  full_join(., table_5_prime_dsLibs) 
+
+combined_3_prime <- table_3_prime_ssLibs %>%
+  full_join(., table_3_prime_dsLibs)
+```
+
+```{r}
+samples <- c("CDM019", "CDM020", "FUM002", "GOY005", "GOY006", "PES001")
+
+individual_damage_plots(combined_5_prime, combined_3_prime, samples, "./06_publication/supplemental_figures/npost_species/n_elongata/damage_plots", "n_elongata")
+```
+
+
+## Aggregatibacter kilianni
+###dsLibs
+```{r}
+files_5_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/aggregatibacter_kilianii", pattern = "5pCtoT_freq.txt", recursive = TRUE, full.names = T)
+
+
+smiley_plot_table_5_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/aggregatibacter_kilianii/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_a_kilianii_q25l30_rmdup/5pCtoT_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Double")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_5_prime_dsLibs <- smiley_plot_table_5_prime(files_5_prime)
+
+```
+
+
+```{r}
+files_3_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/aggregatibacter_kilianii", pattern = "3pGtoA_freq.txt", recursive = TRUE, full.names = T)
+
+smiley_plot_table_3_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/aggregatibacter_kilianii/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_a_kilianii_q25l30_rmdup/3pGtoA_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Double")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_3_prime_dsLibs <- smiley_plot_table_3_prime(files_3_prime)
+
+```
+
+
+```{r}
+dsLib_5_prime <- table_5_prime %>%
+  filter(Strandedness == "Double") %>%
+  ggplot(aes(x=position, y=frequency, color = Individual_ID)) +
+  geom_line() +
+  scale_color_manual(values = sample_colors) +
+  labs(x = "Position", y = "Frequency") +
+  theme_minimal() +
+  theme(legend.position = "right",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 16),  
+          legend.title = element_text(size = 20),
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) +
+  expand_limits(y = c(0, 1))
+
+dsLib_5_prime 
+```
+
+```{r}
+dsLib_3_prime <- table_3_prime %>%
+  mutate(position = (position*-1)) %>%
+  filter(Strandedness == "Double") %>%
+  ggplot(aes(x=position, y=frequency, color = Individual_ID)) +
+  geom_line() +
+  scale_y_continuous(
+    name = NULL,                  
+    sec.axis = dup_axis(name = "Frequency")) +
+  labs(x = "Position") +
+  scale_color_manual(values = sample_colors) +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 20),
+    axis.text.y.left  = element_blank(),   # hide left labels
+    axis.ticks.y.left = element_blank(),
+    axis.text.y.right = element_text(size = 22),
+    axis.title.y.right = element_text(size = 22),
+     axis.title = element_text(size = 22),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 20),
+    plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) +
+    expand_limits(y = c(0, 0.5))
+
+
+dsLib_3_prime 
+```
+
+
+```{r}
+summary_plots_dsLibs <- ggarrange(
+  dsLib_5_prime, dsLib_3_prime,
+  labels = c("", ""), 
+  ncol = 2, nrow = 1,  common.legend = TRUE, legend = "right"
+)
+
+summary_plots_dsLibs
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_kilianii/a_kilianii_dsLib_damage.pdf", plot = summary_plots_dsLibs, device = "pdf", scale = 1, width = 10, height = 4, units = c("in"), dpi = 300)
+```
+
+
+###ssLibs
+```{r}
+files_5_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/aggregatibacter_kilianii", pattern = "5pCtoT_freq.txt", recursive = TRUE, full.names = T)
+
+
+smiley_plot_table_5_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/aggregatibacter_kilianii/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_a_kilianii_q25l30_rmdup/5pCtoT_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Single")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_5_prime_ssLibs <- smiley_plot_table_5_prime(files_5_prime)
+
+```
+
+
+```{r}
+files_3_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/aggregatibacter_kilianii", pattern = "3pGtoA_freq.txt", recursive = TRUE, full.names = T)
+
+smiley_plot_table_3_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/aggregatibacter_kilianii/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_a_kilianii_q25l30_rmdup/3pGtoA_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Single")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_3_prime_ssLibs <- smiley_plot_table_3_prime(files_3_prime)
+
+```
+
+
+```{r}
+ssLib_5_prime <- table_5_prime_ssLibs %>%
+  ggplot(aes(x=position, y=frequency, color = Individual_ID)) +
+  geom_line() +
+  scale_color_manual(values = sample_colors) +
+  labs(x = "Position", y = "Frequency") +
+  theme_minimal() +
+  theme(legend.position = "right",
+          axis.text.x = element_text(angle = 90, hjust = 1, size = 20), 
+          axis.text.y = element_text(size = 22), 
+          axis.title = element_text(size = 22),  
+          legend.text = element_text(size = 16),  
+          legend.title = element_text(size = 20),
+          plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) +
+  expand_limits(y = c(0, 0.4))
+
+ssLib_5_prime 
+```
+
+```{r}
+ssLib_3_prime <- table_3_prime_ssLibs %>%
+  mutate(position = (position*-1)) %>%
+  ggplot(aes(x=position, y=frequency, color = Individual_ID)) +
+  geom_line() +
+  scale_y_continuous(
+    name = NULL,                  
+    sec.axis = dup_axis(name = "Frequency")) +
+  labs(x = "Position") +
+  scale_color_manual(values = sample_colors) +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 20),
+    axis.text.y.left  = element_blank(),   # hide left labels
+    axis.ticks.y.left = element_blank(),
+    axis.text.y.right = element_text(size = 22),
+    axis.title.y.right = element_text(size = 22),
+     axis.title = element_text(size = 22),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 20),
+    plot.margin = margin(t = 5, r = 20, b = 5, l = 5, unit = "pt")) +
+  expand_limits(y = c(0, 0.5))
+
+
+ssLib_3_prime 
+```
+
+
+```{r}
+summary_plots_ssLibs <- ggarrange(
+  ssLib_5_prime, ssLib_3_prime,
+  labels = c("", ""), 
+  ncol = 2, nrow = 1,  common.legend = TRUE, legend = "right"
+)
+
+summary_plots_ssLibs
+
+#ggsave("./06_publication/supplemental_figures/npost_species/a_kilianii/a_kilianii_ssLib_damage.pdf", plot = summary_plots_ssLibs, device = "pdf", scale = 1, width = 10, height = 4, units = c("in"), dpi = 300)
+```
+
+
+###Individual plots
+```{r}
+combined_5_prime <- table_5_prime_ssLibs %>%
+  full_join(., table_5_prime_dsLibs) 
+
+combined_3_prime <- table_3_prime_ssLibs %>%
+  full_join(., table_3_prime_dsLibs)
+```
+
+```{r}
+samples <- c("CDM020", "FUM002", "GOY005", "GOY006", "PES001")
+
+individual_damage_plots(combined_5_prime, combined_3_prime, samples, "./06_publication/supplemental_figures/npost_species/a_kilianii/damage_plots", "a_kiliani")
+```
+
+
+## Actinomyces dentalis
+###dsLibs
+```{r}
+files_5_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/actinomyces_dentalis", pattern = "5pCtoT_freq.txt", recursive = TRUE, full.names = T)
+
+
+smiley_plot_table_5_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/actinomyces_dentalis/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_a_dentalis_q25l30_rmdup/5pCtoT_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Double")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_5_prime_dsLibs <- smiley_plot_table_5_prime(files_5_prime)
+
+```
+
+
+```{r}
+files_3_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/actinomyces_dentalis", pattern = "3pGtoA_freq.txt", recursive = TRUE, full.names = T)
+
+smiley_plot_table_3_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/actinomyces_dentalis/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_a_dentalis_q25l30_rmdup/3pGtoA_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Double")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_3_prime_dsLibs <- smiley_plot_table_3_prime(files_3_prime)
+
+```
+
+
+###ssLibs
+```{r}
+files_5_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/actinomyces_dentalis", pattern = "5pCtoT_freq.txt", recursive = TRUE, full.names = T)
+
+
+smiley_plot_table_5_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/actinomyces_dentalis/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_a_dentalis_q25l30_rmdup/5pCtoT_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Single")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_5_prime_ssLibs <- smiley_plot_table_5_prime(files_5_prime)
+
+```
+
+
+```{r}
+files_3_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/actinomyces_dentalis", pattern = "3pGtoA_freq.txt", recursive = TRUE, full.names = T)
+
+smiley_plot_table_3_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/actinomyces_dentalis/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_a_dentalis_q25l30_rmdup/3pGtoA_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Single")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_3_prime_ssLibs <- smiley_plot_table_3_prime(files_3_prime)
+
+```
+
+
+###Individual plots
+```{r}
+combined_5_prime <- table_5_prime_ssLibs %>%
+  full_join(., table_5_prime_dsLibs) 
+
+combined_3_prime <- table_3_prime_ssLibs %>%
+  full_join(., table_3_prime_dsLibs)
+```
+
+
+```{r}
+samples <- c("CDM019", "CDM020", "FUM002", "GDN001", "GOY005", "GOY006", "PES001", "VLD001")
+
+individual_damage_plots(combined_5_prime, combined_3_prime, samples, "./06_publication/supplemental_figures/npost_species/a_dentalis/damage_plots", "a_dentalis")
+```
+
+
+## Flexilinea sp001717545
+###dsLibs
+```{r}
+files_5_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/flexilinea_sp001717545", pattern = "5pCtoT_freq.txt", recursive = TRUE, full.names = T)
+
+
+smiley_plot_table_5_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/flexilinea_sp001717545/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_f_sp001717545_q25l30_rmdup/5pCtoT_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Double")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_5_prime_dsLibs <- smiley_plot_table_5_prime(files_5_prime)
+
+```
+
+
+```{r}
+files_3_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/flexilinea_sp001717545", pattern = "3pGtoA_freq.txt", recursive = TRUE, full.names = T)
+
+smiley_plot_table_3_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/flexilinea_sp001717545/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_f_sp001717545_q25l30_rmdup/3pGtoA_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Double")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_3_prime_dsLibs <- smiley_plot_table_3_prime(files_3_prime)
+
+```
+
+
+###ssLibs
+```{r}
+files_5_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/flexilinea_sp001717545", pattern = "5pCtoT_freq.txt", recursive = TRUE, full.names = T)
+
+
+smiley_plot_table_5_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/flexilinea_sp001717545/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_f_sp001717545_q25l30_rmdup/5pCtoT_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Single")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_5_prime_ssLibs <- smiley_plot_table_5_prime(files_5_prime)
+
+```
+
+
+```{r}
+files_3_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/flexilinea_sp001717545", pattern = "3pGtoA_freq.txt", recursive = TRUE, full.names = T)
+
+smiley_plot_table_3_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/flexilinea_sp001717545/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_f_sp001717545_q25l30_rmdup/3pGtoA_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Single")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_3_prime_ssLibs <- smiley_plot_table_3_prime(files_3_prime)
+
+```
+
+
+###Individual plots
+```{r}
+combined_5_prime <- table_5_prime_ssLibs %>%
+  full_join(., table_5_prime_dsLibs) 
+
+combined_3_prime <- table_3_prime_ssLibs %>%
+  full_join(., table_3_prime_dsLibs)
+```
+
+
+```{r}
+samples <- c("CDM019", "CDM020", "FUM002", "GDN001", "GOY005", "GOY006", "PES001", "VLD001")
+
+individual_damage_plots(combined_5_prime, combined_3_prime, samples, "./06_publication/supplemental_figures/npost_species/flexilinea/damage_plots", "flexilinea")
+```
+
+
+
+## Methanobrevibacter_A oralis
+###dsLibs
+```{r}
+files_5_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/methanobrevibacter_oralis", pattern = "5pCtoT_freq.txt", recursive = TRUE, full.names = T)
+
+
+smiley_plot_table_5_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/methanobrevibacter_oralis/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_m_oralis_q25l30_rmdup/5pCtoT_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Double")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_5_prime_dsLibs <- smiley_plot_table_5_prime(files_5_prime)
+
+```
+
+
+```{r}
+files_3_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/methanobrevibacter_oralis", pattern = "3pGtoA_freq.txt", recursive = TRUE, full.names = T)
+
+smiley_plot_table_3_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/methanobrevibacter_oralis/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_m_oralis_q25l30_rmdup/3pGtoA_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Double")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_3_prime_dsLibs <- smiley_plot_table_3_prime(files_3_prime)
+
+```
+
+
+###ssLibs
+```{r}
+files_5_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/methanobrevibacter_oralis", pattern = "5pCtoT_freq.txt", recursive = TRUE, full.names = T)
+
+
+smiley_plot_table_5_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/methanobrevibacter_oralis/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_m_oralis_q25l30_rmdup/5pCtoT_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Single")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_5_prime_ssLibs <- smiley_plot_table_5_prime(files_5_prime)
+
+```
+
+
+```{r}
+files_3_prime <- list.files(path = "./05-results/normalize_kraken/mapDamge2/methanobrevibacter_oralis", pattern = "3pGtoA_freq.txt", recursive = TRUE, full.names = T)
+
+smiley_plot_table_3_prime <- function(files) {
+  table <- lapply(files, function(fn) {
+    fread(fn) %>%
+    rename(position = 1,
+          frequency = 2) %>%
+    mutate(Sequencing_ID = fn) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "./05-results/normalize_kraken/mapDamge2/methanobrevibacter_oralis/results_", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, ".mapped_m_oralis_q25l30_rmdup/3pGtoA_freq.txt", "")) %>%  
+    inner_join(., metadata_wp %>%
+              dplyr::select(Sequencing_ID, Strandedness, Individual_ID)) %>%
+      filter(Strandedness == "Single")
+  })
+  
+  table_all <- do.call(rbind, table) 
+  
+  return(table_all)
+}
+
+table_3_prime_ssLibs <- smiley_plot_table_3_prime(files_3_prime)
+
+```
+
+
+###Individual plots
+```{r}
+combined_5_prime <- table_5_prime_ssLibs %>%
+  full_join(., table_5_prime_dsLibs) 
+
+combined_3_prime <- table_3_prime_ssLibs %>%
+  full_join(., table_3_prime_dsLibs)
+```
+
+
+```{r}
+samples <- c("CDM019", "CDM020", "FUM002", "GDN001", "GOY005", "GOY006", "PES001", "VLD001")
+
+individual_damage_plots(combined_5_prime, combined_3_prime, samples, "./06_publication/supplemental_figures/npost_species/m_oralis/damage_plots", "m_oralis")
+```
+
+
+

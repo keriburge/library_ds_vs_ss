@@ -1,0 +1,1215 @@
+---
+title: "Sourcetracker Taxa Table Prep"
+author: "Keri Burge"
+date: "`r format(Sys.time(), '%b %d, %Y')`"
+output:
+    github_document:
+        fig_width: 8
+        fig_height: 6
+        toc: true
+---
+
+```{r}
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+# The following initializes usage of Bioc devel
+BiocManager::install(version='devel')
+
+BiocManager::install("decontam")
+```
+
+
+```{r load_libraries, echo = F, message = F}
+library(knitr)
+library(data.table)
+library(decontam)
+library(tidyverse)
+
+opts_chunk$set(echo=F, warning=F, message=F, dpi=150)
+```
+
+Set the working directory of the notebook to the parent directory of the notebook itself.  
+
+```{r setup}
+knitr::opts_knit$set(root.dir = normalizePath(".."))
+
+```
+
+
+# Prepare kraken2 total species tables
+## Sources and controls
+```{r}
+#Read in Kraken2 Data
+kraken2 <- fread("./05-results/dsvss_sources_control_kraken2_gtdb207_combined_table.tsv")
+
+#Create a character vector for the column names
+kraken2_sample_names <- fread("./05-results/dsvss_sources_controls_kraken2_file_names.tsv", header = F) %>%
+  rename(sample = 1) %>%
+  mutate(sample = str_replace_all(sample, ".kraken2.gtdb.report_mpa.tsv", "")) %>%
+  mutate(sample = str_replace_all(sample, ".ST1", "")) %>%
+  mutate(sample = str_replace_all(sample, ".SG1", "")) %>%
+  pull()
+
+kraken2 <- kraken2 %>%
+  column_to_rownames("#Classification")
+
+colnames(kraken2) <- kraken2_sample_names
+
+kraken2 <- kraken2 %>%
+  rownames_to_column("#Classification") %>%
+  rename(Species = 1)
+
+kraken2 <- kraken2 %>%
+  column_to_rownames("Species") %>%
+  rownames_to_column("Species") 
+
+kraken2_species_sc <- kraken2 %>%
+  filter(str_detect(Species, "s__")) %>% #must first filter for species
+  separate_wider_delim(Species, delim = "|", too_few = "align_end", names = c("Domain","Phylum","Class","Order","Family","Genus","Species")) %>%
+  mutate(Species = str_replace_all(Species, "s__", "")) %>%
+  arrange(Species) %>%
+  dplyr::select(-Domain, -Phylum, -Class, -Order, -Family, -Genus) %>%
+  mutate(Species = str_replace_all(Species, "s__", ""),
+           Species = str_replace_all(Species, "_", " ")) %>%
+  filter(!is.na(Species))
+
+#fwrite(kraken2_species_sc, "./05-results/dsvss_sources_controls_kraken2_gtdb207_total_species.tsv", sep = "\t", col.names = TRUE)
+```
+
+
+## No normalization
+```{r}
+#Read in Kraken2 Data
+kraken2 <- fread("./05-results/no_normalization/dsvss_NN_kraken2_gtdb207_combined_table.tsv")
+
+#Create a character vector for the column names
+kraken2_sample_names <- fread("./05-results/no_normalization/dsvss_NN_kraken2_output_file_names.tsv", header = F) %>%
+  rename(sample = 1) %>%
+  mutate(sample = str_replace_all(sample, ".kraken2.gtdb.report_mpa.no_norm.tsv", "")) %>%
+  pull()
+
+kraken2 <- kraken2 %>%
+  column_to_rownames("#Classification")
+
+colnames(kraken2) <- kraken2_sample_names
+
+kraken2 <- kraken2 %>%
+  rownames_to_column("#Classification") %>%
+  rename(Species = 1)
+
+kraken2 <- kraken2 %>%
+  column_to_rownames("Species") %>%
+  rownames_to_column("Species") 
+
+kraken2_species_no_norm <- kraken2 %>%
+  filter(str_detect(Species, "s__")) %>% #must first filter for species
+  separate_wider_delim(Species, delim = "|", too_few = "align_end", names = c("Domain","Phylum","Class","Order","Family","Genus","Species")) %>%
+  #separate(Species, into = c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"), sep = "\\|", extra = "merge") %>%
+  mutate(Species = str_replace_all(Species, "s__", "")) %>%
+  arrange(Species) %>%
+  dplyr::select(-Domain, -Phylum, -Class, -Order, -Family, -Genus) %>%
+  mutate(Species = str_replace_all(Species, "s__", ""),
+           Species = str_replace_all(Species, "_", " ")) %>%
+  filter(!is.na(Species))
+
+#fwrite(kraken2_species_no_norm, "./05-results/no_normalization/dsvss_NN_kraken2_gtdb207_total_species.tsv", sep = "\t", col.names = TRUE)
+```
+
+
+## Normalize 5M into kraken2
+```{r}
+#Read in Kraken2 Data
+kraken2 <- fread("./05-results/normalize_kraken/dsvss_npost_kraken2_gtdb207_combined_table.tsv")
+
+#Create a character vector for the column names
+kraken2_sample_names <- fread("./05-results/normalize_kraken/dsvss_npost_kraken2_output_file_names.tsv", header = F) %>%
+  rename(sample = 1) %>%
+  mutate(sample = str_replace_all(sample, ".kraken2.gtdb.report_mpa.tsv", "")) %>%
+  pull()
+
+kraken2 <- kraken2 %>%
+  column_to_rownames("#Classification")
+
+colnames(kraken2) <- kraken2_sample_names
+
+kraken2 <- kraken2 %>%
+  rownames_to_column("#Classification") %>%
+  rename(Species = 1)
+
+kraken2 <- kraken2 %>%
+  column_to_rownames("Species") %>%
+  rownames_to_column("Species") 
+
+kraken2_species_5M <- kraken2 %>%
+  filter(str_detect(Species, "s__")) %>% #must first filter for species
+  separate_wider_delim(Species, delim = "|", too_few = "align_end", names = c("Domain","Phylum","Class","Order","Family","Genus","Species")) %>%
+  #separate(Species, into = c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"), sep = "\\|", extra = "merge") %>%
+  mutate(Species = str_replace_all(Species, "s__", "")) %>%
+  arrange(Species) %>%
+  dplyr::select(-Domain, -Phylum, -Class, -Order, -Family, -Genus) %>%
+  mutate(Species = str_replace_all(Species, "s__", ""),
+           Species = str_replace_all(Species, "_", " ")) %>%
+  filter(!is.na(Species))
+
+#fwrite(kraken2_species_5M, "./05-results/normalize_kraken/dsvss_npost_kraken2_gtdb207_total_species.tsv", sep = "\t", col.names = TRUE)
+```
+
+## Normalize 10M into nf-core/eager
+### Kraken2 species table
+```{r}
+#Read in Kraken2 Data
+kraken2 <- fread("./05-results/normalize_eager/dsvss_npre_kraken2_gtdb207_combined_table.tsv")
+
+#Create a character vector for the column names
+kraken2_sample_names <- fread("./05-results/normalize_eager/dsvss_npre_kraken2_output_file_names.tsv", header = F) %>%
+  rename(sample = 1) %>%
+  mutate(sample = str_replace_all(sample, ".kraken2.gtdb.report_mpa.10M.tsv", "_10M")) %>%
+  pull()
+
+kraken2 <- kraken2 %>%
+  column_to_rownames("#Classification")
+
+colnames(kraken2) <- kraken2_sample_names
+
+kraken2 <- kraken2 %>%
+  rownames_to_column("#Classification") %>%
+  rename(Species = 1)
+
+kraken2 <- kraken2 %>%
+  column_to_rownames("Species") %>%
+  rownames_to_column("Species") 
+
+kraken2_species_10M <- kraken2 %>%
+  filter(str_detect(Species, "s__")) %>% #must first filter for species
+  separate_wider_delim(Species, delim = "|", too_few = "align_end", names = c("Domain","Phylum","Class","Order","Family","Genus","Species")) %>%
+  #separate(Species, into = c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"), sep = "\\|", extra = "merge") %>%
+  mutate(Species = str_replace_all(Species, "s__", "")) %>%
+  arrange(Species) %>%
+  dplyr::select(-Domain, -Phylum, -Class, -Order, -Family, -Genus) %>%
+  mutate(Species = str_replace_all(Species, "s__", ""),
+           Species = str_replace_all(Species, "_", " ")) %>%
+  filter(!is.na(Species))
+
+#fwrite(kraken2_species_10M, "./05-results/normalize_eager/dsvss_npre_kraken2_gtdb207_total_species.tsv", sep = "\t", col.names = TRUE)
+```
+
+### Read length subsampling
+```{r}
+#Read in Kraken2 Data
+kraken2 <- fread("./05-results/normalize_eager/dsvss_npre_read_length_subsample_kraken2_gtdb207_combined_table.tsv")
+
+#Create a character vector for the column names
+kraken2_sample_names <- fread("./05-results/normalize_eager/dsvss_npre_read_length_subsampling_kraken2_output_file_names.tsv", header = F) %>%
+  rename(sample = 1) %>%
+  mutate(sample = str_replace_all(sample, ".kraken2.gtdb.report_mpa.tsv", "")) %>%
+  pull()
+
+kraken2 <- kraken2 %>%
+  column_to_rownames("#Classification")
+
+colnames(kraken2) <- kraken2_sample_names
+
+kraken2 <- kraken2 %>%
+  rownames_to_column("#Classification") %>%
+  rename(Species = 1)
+
+kraken2 <- kraken2 %>%
+  column_to_rownames("Species") %>%
+  rownames_to_column("Species") 
+
+kraken2_species_10M_rl_subsampling <- kraken2 %>%
+  filter(str_detect(Species, "s__")) %>% #must first filter for species
+  separate_wider_delim(Species, delim = "|", too_few = "align_end", names = c("Domain","Phylum","Class","Order","Family","Genus","Species")) %>%
+  #separate(Species, into = c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"), sep = "\\|", extra = "merge") %>%
+  mutate(Species = str_replace_all(Species, "s__", "")) %>%
+  arrange(Species) %>%
+  dplyr::select(-Domain, -Phylum, -Class, -Order, -Family, -Genus) %>%
+  mutate(Species = str_replace_all(Species, "s__", ""),
+           Species = str_replace_all(Species, "_", " ")) %>%
+  filter(!is.na(Species))
+
+#fwrite(kraken2_species_10M_rl_subsampling, "./05-results/normalize_eager/dsvss_npre_read_length_subsampling_kraken2_gtdb207_total_species.tsv", sep = "\t", col.names = TRUE)
+```
+
+
+# Normalize 5M into Kraken
+
+```{r}
+#Read in kraken2 table
+kraken2_5M <- fread("./05-results/normalize_kraken/dsvss_npost_kraken2_gtdb207_total_species.tsv")
+
+#Bone samples and library blanks 
+control_samples <- fread("./00-documentation/controls_metadata.csv") %>%
+  dplyr::select(Library_ID) %>%
+  pull()
+
+kraken2_controls <- fread("./05-results/dsvss_sources_controls_kraken2_gtdb207_total_species.tsv") %>%
+  rename_with(~ str_remove(., "\\.(SG1|ST1)$")) %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(one_of(control_samples)) %>%
+  rownames_to_column("Species")
+
+#removed: `EXB015.A2001`, `EXB015.A2101`
+```
+
+
+```{r}
+#Calculate total counts of each species 
+kraken2_5M_totals <-  kraken2_5M %>%
+  column_to_rownames("Species") %>%
+   mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  rownames_to_column("Species") %>%
+  relocate("Total", .after = Species) 
+
+#Determine the total amount of counts across species
+total_sum <- sum(kraken2_5M_totals$Total)
+
+#Calculate the relative abundance and filter for species only greater than or equal to 0.005%
+kraken2_5M_abundance <- kraken2_5M_totals %>%
+  mutate(Relative_Abundance = (Total / total_sum)*100) %>% #made it a percentage here so use percentage for cut-off
+  relocate(Relative_Abundance, .after = Species) 
+
+kraken2_5M_filtered <- kraken2_5M_abundance %>%
+  filter(Relative_Abundance >= 0.005) %>% #using a 0.005% cut-off
+  dplyr::select(-Total, -Relative_Abundance)
+
+# 0.005% = 676
+# 0.001% = 1,851 
+# 0.01% = 473 
+# 0.05% = 183
+
+
+```
+
+```{r}
+#Bone samples and library blanks
+
+#Calculate total counts of each species 
+kraken2_controls_totals <-  kraken2_controls %>%
+  column_to_rownames("Species") %>%
+   mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  rownames_to_column("Species") %>%
+  relocate("Total", .after = Species) 
+
+#Determine the total amount of counts across species
+total_sum <- sum(kraken2_controls_totals$Total)
+
+#Calculate the relative abundance and filter for species only greater than or equal to 0.005%
+kraken2_controls_abundance <- kraken2_controls_totals %>%
+  mutate(Relative_Abundance = (Total / total_sum)*100) %>%
+  relocate(Relative_Abundance, .after = Species) 
+
+kraken2_controls_filtered <- kraken2_controls_abundance %>%
+  filter(Relative_Abundance >= 0.005) %>% #using a 0.005% cut-off
+  dplyr::select(-Total, -Relative_Abundance)
+
+# 0.005% = 3,696
+# 0.001% = 13,023
+# 0.01% = 1,552
+# 0.05% = 181
+```
+
+```{r}
+#Combine sample and control kraken2 tables to run decontam
+kraken2_5M_full <- kraken2_5M_filtered %>%
+  full_join(., kraken2_controls_filtered) %>%
+  mutate_all(~replace(., is.na(.), 0)) %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(order(colnames(.))) %>%
+  rownames_to_column("Species")
+
+```
+
+
+```{r}
+#Correctly format mapping file for SourceTracker
+mapfile_kraken5M <- fread("./05-results/normalize_kraken/dsvss_npost_source_tracker_mappingfile_complete.tsv") %>%
+  rename(Sample = 1) %>%
+  filter(str_detect(Sample, "SG")) %>%
+  rename('#SampleID' = 1)
+  
+controls <- fread("./05-results/dsvss_controls_sourcetracker_metadata.tsv") %>%
+  rename('#SampleID' = 1)
+
+mapfile_kraken5M_complete <- mapfile_kraken5M %>%
+  full_join(., controls) %>%
+  rename(Library_ID = 1) %>%
+  arrange(Library_ID)
+
+
+```
+
+
+##Decontam
+```{r}
+#Prepare metadata
+#Assign sample-type status to identify control samples
+mapfile_kraken5M_complete$is.control <- mapfile_kraken5M_complete$SourceSink=="Control"
+```
+
+
+
+```{r}
+#already removed NAs from species column
+kraken2_5M_species.dataframe <- kraken2_5M_full %>%
+  replace(is.na(.), 0) %>%
+  gather("Library_ID","Counts", 2:ncol(.)) %>%
+  spread(Species,Counts) %>%
+  arrange(Library_ID) 
+
+names <- colnames(kraken2_5M_full) 
+
+mapfile_kraken5M_complete %>%
+  filter(!Library_ID %in% names)
+
+#make a matrix for decontam
+kraken2_5M_species.matrix <- data.matrix(kraken2_5M_species.dataframe[2:ncol(kraken2_5M_species.dataframe)])
+rownames(kraken2_5M_species.matrix) <- kraken2_5M_species.dataframe$Library_ID 
+
+
+#Try changing the probability threshold cut-off to see how many more or less are ID'd as contaminants
+contam.prev.species_5M <- isContaminant(kraken2_5M_species.matrix, method="prevalence", 
+                                 neg=mapfile_kraken5M_complete$is.control, 
+                                 threshold = 0.9)
+
+#Check number of contaminants
+table(contam.prev.species_5M$contaminant)
+
+#List of contaminants
+cont_prev_species_5M_list <- contam.prev.species_5M[which(contam.prev.species_5M$contaminant=="TRUE"), ]
+not_contam_5M_list <- contam.prev.species_5M[which(contam.prev.species_5M$contaminant=="FALSE"), ]
+
+#Which of these contaminants are considered oral?
+oral_species <- fread("./00-documentation/dsvss_gtdb_r207_species_sources.tsv", header = TRUE) %>%
+  select(-V3) %>%
+  filter(str_detect(Isolation_Source, "oral"))
+
+contam_list_5M <- cont_prev_species_5M_list %>%
+  rownames_to_column("Species") %>%
+  right_join(., oral_species, by = "Species") %>%
+  filter(str_detect(Isolation_Source, "oral")) %>%
+  filter(!is.na(contaminant))
+
+# Look at the histogram - does the probability threshold need to be changed?
+ggplot(contam.prev.species_5M, aes(x=p)) +
+  geom_histogram(bins=100) +
+  scale_y_log10() +
+  ggtitle('Prevalence - Species') +
+  theme_minimal()
+
+```
+
+
+```{r}
+#remove contaminants from kraken2 full filtered table (just ancient samples)
+contaminant_list_5M <- cont_prev_species_5M_list %>%
+  rownames_to_column("Species") %>%
+  dplyr::select(Species) %>%
+  pull()
+
+kraken2_5M_filtered_decontam <- kraken2_5M_filtered %>%
+  filter(!(Species %in% contaminant_list_5M)) 
+
+#fwrite(kraken2_5M_filtered_decontam, "./05-results/normalize_kraken/dsvss_npost_kraken2_gtdb207_total_species_decontam.tsv", sep = "\t")
+```
+
+
+```{r}
+#Prepare kraken2 tables for 3 runs - (1) no normalization + sources, (2) over 50 bp + sources, (3) under 50 bp + sources
+
+#Read in sources kraken2 table
+sources_kraken2 <- fread("./05-results/dsvss_sources_controls_kraken2_gtdb207_total_species.tsv")
+
+#temporarily take out sloan 2017 environmental samples because they have too few species to filter
+mappingfile_5M <- fread("./05-results/normalize_kraken/dsvss_npost_source_tracker_mappingfile_complete.tsv") 
+
+enviro_samples <- mappingfile_5M %>%
+  filter(str_detect(Study, "sloan2017")) %>%
+  rename(Sample = 1) %>%
+  dplyr::select(Sample) %>%
+  pull()
+
+sources_kraken2_no_enviro <- sources_kraken2 %>%
+  dplyr::select(!one_of(enviro_samples))
+
+#remove control samples
+controls <- fread("./00-documentation/controls_metadata.csv") %>%
+  dplyr::select(Library_ID) %>%
+  pull()
+
+sources_kraken2_no_enviro <- sources_kraken2_no_enviro %>%
+  dplyr::select(!one_of(controls))
+
+#Calculate total counts of each species 
+sources_kraken2_totals <-  sources_kraken2_no_enviro %>%
+  column_to_rownames("Species") %>%
+   mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  rownames_to_column("Species") %>%
+  relocate("Total", .after = Species) 
+
+#Determine the total amount of counts across species
+total_sum <- sum(sources_kraken2_totals$Total)
+
+#Calculate the relative abundance and filter for species only greater than or equal to 0.005%
+sources_kraken2_abundance <- sources_kraken2_totals %>%
+  mutate(Relative_Abundance = (Total / total_sum)*100) %>%
+  relocate(Relative_Abundance, .after = Species) 
+
+sources_kraken2_filtered <- sources_kraken2_abundance %>%
+  filter(Relative_Abundance >= 0.005) %>% #using a 0.005% cut-off
+  dplyr::select(-Total, -Relative_Abundance)
+
+#add back the environmental samples but remove species with a total of 0 
+sources_kraken2_enviro <- sources_kraken2 %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(one_of(enviro_samples)) %>%
+  mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  rownames_to_column("Species") %>%
+  relocate("Total", .after = Species) %>%
+  filter(Total > 0) %>%
+  dplyr::select(-Total)
+
+sources_kraken2_filtered <- sources_kraken2_filtered %>%
+  full_join(., sources_kraken2_enviro) %>%
+  mutate_all(~replace(., is.na(.), 0)) %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(sort(names(.))) %>%
+  rownames_to_column("Species") 
+  
+#(1) No normalization + sources
+no_norm_5M_samples <- fread("./05-results/normalize_kraken/dsvss_npost_source_tracker_mappingfile_complete.tsv") %>%
+  filter(str_detect(SourceSink, "sink")) %>%
+  filter(!str_detect(`#SampleID`, "50bp")) %>%
+  dplyr::select(`#SampleID`) %>%
+  pull()
+
+no_norm_5M_mappingfile <- fread("./05-results/normalize_kraken/dsvss_npost_source_tracker_mappingfile_complete.tsv") %>%
+  filter(!str_detect(`#SampleID`, "50bp")) %>%
+  arrange(`#SampleID`) 
+
+#fwrite(no_norm_5M_mappingfile, "./05-results/normalize_kraken/dsvss_npost_no_read_length_sourcetracker_input_mapping_file.tsv", sep = "\t", quote = F)
+
+kraken2_5M_filtered_decontam_no_norm <- kraken2_5M_filtered_decontam %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(one_of(no_norm_5M_samples)) %>%
+  rownames_to_column("Species") %>%
+  full_join(., sources_kraken2_filtered) %>%
+  mutate_all(~replace(., is.na(.), 0)) %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(sort(names(.)))  %>%
+  rownames_to_column("Species") %>%
+  rename('#OTU ID' = Species)
+
+#fwrite(kraken2_5M_filtered_decontam_no_norm, "./05-results/normalize_kraken/dsvss_npost_no_read_length_sourcetracker_input_decontam_species_table.txt", sep = "\t", quote = F)
+
+#(2) over50bp + sources
+over50bp_5M_samples <- fread("./05-results/normalize_kraken/dsvss_npost_source_tracker_mappingfile_complete.tsv") %>%
+  filter(str_detect(SourceSink, "sink")) %>%
+  filter(str_detect(`#SampleID`, "over50bp")) %>%
+  dplyr::select(`#SampleID`) %>%
+  pull()
+
+over50bp_5M_mappingfile <- fread("./05-results/normalize_kraken/dsvss_npost_source_tracker_mappingfile_complete.tsv") %>%
+   filter(!str_detect(`#SampleID`, "_5M$")) %>%
+  filter(!str_detect(`#SampleID`, "under50bp")) %>%
+  arrange(`#SampleID`) 
+
+#fwrite(over50bp_5M_mappingfile, "./05-results/normalize_kraken/dsvss_npost_over50bp_sourcetracker_input_mapping_file.tsv", sep = "\t", quote = F)
+
+kraken2_5M_over50bp_filtered_decontam_no_norm <- kraken2_5M_filtered_decontam %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(one_of(over50bp_5M_samples)) %>%
+  rownames_to_column("Species") %>%
+  full_join(., sources_kraken2_filtered) %>%
+  mutate_all(~replace(., is.na(.), 0)) %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(sort(names(.)))  %>%
+  rownames_to_column("Species") %>%
+  rename('#OTU ID' = Species)
+
+#fwrite(kraken2_5M_over50bp_filtered_decontam_no_norm, "./05-results/normalize_kraken/dsvss_npost_over50bp_sourcetracker_input_decontam_species_table.txt", sep = "\t", quote = F)
+
+#(3) under50bp + sources
+under50bp_5M_samples <- fread("./05-results/normalize_kraken/dsvss_npost_source_tracker_mappingfile_complete.tsv") %>%
+  filter(str_detect(SourceSink, "sink")) %>%
+  filter(str_detect(`#SampleID`, "under50bp")) %>%
+  dplyr::select(`#SampleID`) %>%
+  pull()
+
+under50bp_5M_mappingfile <- fread("./05-results/normalize_kraken/dsvss_npost_source_tracker_mappingfile_complete.tsv") %>%
+   filter(!str_detect(`#SampleID`, "_5M$")) %>%
+  filter(!str_detect(`#SampleID`, "over50bp")) %>%
+  arrange(`#SampleID`) 
+
+#fwrite(under50bp_5M_mappingfile, "./05-results/normalize_kraken/dsvss_npost_under50bp_sourcetracker_input_mapping_file.tsv", sep = "\t", quote = F)
+
+kraken2_5M_under50bp_filtered_decontam_no_norm <- kraken2_5M_filtered_decontam %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(one_of(under50bp_5M_samples)) %>%
+  rownames_to_column("Species") %>%
+  full_join(., sources_kraken2_filtered) %>%
+  mutate_all(~replace(., is.na(.), 0)) %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(sort(names(.)))  %>%
+  rownames_to_column("Species") %>%
+  rename('#OTU ID' = Species)
+
+#fwrite(kraken2_5M_under50bp_filtered_decontam_no_norm, "./05-results/normalize_kraken/dsvss_npost_under50bp_sourcetracker_input_decontam_species_table.txt", sep = "\t", quote = F)
+```
+
+
+```{r}
+#check rarefaction value - based on being close to sum of lowest count (make sure its not ABOVE sample count)
+kraken2_filtered_decontam.dataframe <- kraken2_5M_over50bp_filtered_decontam_no_norm %>%
+  rename(Species = 1) %>%
+  gather("Library_ID","Counts", 2:ncol(.)) %>%
+  spread(Species,Counts) %>%
+  arrange(Library_ID) 
+
+library_ids <- kraken2_filtered_decontam.dataframe$Library_ID
+
+species_counts <- rowSums(kraken2_filtered_decontam.dataframe[, -1])
+
+species_counts_with_id <- cbind('#SampleID' = library_ids, Species_Counts = species_counts)
+
+species_counts_with_id_table <- as.data.frame(species_counts_with_id) %>%
+  full_join(., over50bp_5M_mappingfile) %>%
+  mutate(Species_Counts = as.numeric(Species_Counts))
+
+#lowest no norm = 3,113 (ERR1883437) - 16
+#lowest over 50 = 3,113 (ERR1883437)
+#lowest under 50 = 3113 (ERR1883437)
+
+```
+
+
+# Normalize 10M into eager
+
+```{r}
+#Read in kraken2 table
+kraken2_10M_no_rl <- fread("./05-results/normalize_eager/dsvss_npre_kraken2_gtdb207_total_species.tsv")
+
+kraken2_10M_rl_subsampling <- fread("./05-results/normalize_eager/dsvss_npre_read_length_subsampling_kraken2_gtdb207_total_species.tsv")
+
+kraken2_10M <- kraken2_10M_no_rl %>%
+  full_join(., kraken2_10M_rl_subsampling)
+
+#Bone samples and library blanks 
+control_samples <- fread("./05-results/dsvss_controls_sourcetracker_metadata.tsv") %>%
+  dplyr::select(Library_ID) %>%
+  pull()
+
+kraken2_controls <- fread("./05-results/dsvss_sources_controls_kraken2_gtdb207_total_species.tsv") %>%
+  rename_with(~ str_remove(., "\\.(SG1|ST1)$")) %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(one_of(control_samples)) %>%
+  rownames_to_column("Species")
+
+#removed: `EXB015.A2001`, `EXB015.A2101`
+```
+
+
+```{r}
+#Calculate total counts of each species 
+kraken2_10M_totals <-  kraken2_10M %>%
+  column_to_rownames("Species") %>%
+   mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  rownames_to_column("Species") %>%
+  relocate("Total", .after = Species) 
+
+#Determine the total amount of counts across species
+total_sum <- sum(kraken2_10M_totals$Total)
+
+#Calculate the relative abundance and filter for species only greater than or equal to 0.01%
+kraken2_10M_abundance <- kraken2_10M_totals %>%
+  mutate(Relative_Abundance = (Total / total_sum)*100) %>%
+  relocate(Relative_Abundance, .after = Species) 
+
+kraken2_10M_filtered <- kraken2_10M_abundance %>%
+  filter(Relative_Abundance >= 0.005) %>% #using a 0.005% cut-off
+  dplyr::select(-Total, -Relative_Abundance)
+
+# 0.005% = 715
+
+```
+
+```{r}
+#Bone samples and library blanks
+
+#Calculate total counts of each species 
+kraken2_controls_totals <-  kraken2_controls %>%
+  column_to_rownames("Species") %>%
+   mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  rownames_to_column("Species") %>%
+  relocate("Total", .after = Species) 
+
+#Determine the total amount of counts across species
+total_sum <- sum(kraken2_controls_totals$Total)
+
+#Calculate the relative abundance and filter for species only greater than or equal to 0.01%
+kraken2_controls_abundance <- kraken2_controls_totals %>%
+  mutate(Relative_Abundance = (Total / total_sum)*100) %>%
+  relocate(Relative_Abundance, .after = Species) 
+
+kraken2_controls_filtered <- kraken2_controls_abundance %>%
+  filter(Relative_Abundance >= 0.005) %>% #using a 0.005% cut-off
+  dplyr::select(-Total, -Relative_Abundance)
+
+# 0.005% = 3,696
+# 0.001% = 13,023
+# 0.01% = 1,552
+# 0.05% = 181
+```
+
+```{r}
+#Combine sample and control kraken2 tables to run decontam
+kraken2_10M_full <- kraken2_10M_filtered %>%
+  full_join(., kraken2_controls_filtered) %>%
+  mutate_all(~replace(., is.na(.), 0)) %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(order(colnames(.))) %>%
+  rownames_to_column("Species")
+
+```
+
+
+```{r}
+#Correctly format mapping file for SourceTracker
+mapfile_kraken10M <- fread("./05-results/normalize_eager/dsvss_npre_source_tracker_mappingfile_complete.tsv") %>%
+  rename(Sample = 1) %>%
+  filter(str_detect(Sample, "SG")) %>%
+  rename('#SampleID' = 1)
+  
+controls <- fread("./00-documentation/controls_metadata.csv") %>%
+  filter(!Library_ID == "EXB015.A2001",
+         !Library_ID == "EXB015.A2101") %>%
+  rename('#SampleID' = 1)
+  
+mapfile_kraken10M_complete <- mapfile_kraken10M %>%
+  full_join(., controls) %>%
+  rename(Library_ID = 1) %>%
+  arrange(Library_ID)
+
+
+```
+
+
+##Decontam
+```{r}
+#Prepare metadata
+#Assign sample-type status to identify control samples
+mapfile_kraken10M_complete$is.control <- mapfile_kraken10M_complete$SourceSink=="Control"
+```
+
+
+```{r}
+#already removed NAs from species column
+kraken2_10M_species.dataframe <- kraken2_10M_full %>%
+  replace(is.na(.), 0) %>%
+  gather("Library_ID","Counts", 2:ncol(.)) %>%
+  spread(Species,Counts) %>%
+  arrange(Library_ID) 
+
+names <- colnames(kraken2_10M_full) 
+
+mapfile_kraken10M_complete %>%
+  filter(!Library_ID %in% names)
+
+#make a matrix for decontam
+kraken2_10M_species.matrix <- data.matrix(kraken2_10M_species.dataframe[2:ncol(kraken2_10M_species.dataframe)])
+rownames(kraken2_10M_species.matrix) <- kraken2_10M_species.dataframe$Library_ID 
+
+
+#Try changing the probability threshold cut-off to see how many more or less are ID'd as contaminants
+contam.prev.species_10M <- isContaminant(kraken2_10M_species.matrix, method="prevalence", 
+                                 neg=mapfile_kraken10M_complete$is.control, 
+                                 threshold = 0.9)
+
+
+#Check number of contaminants
+table(contam.prev.species_10M$contaminant)
+
+#List of contaminants
+cont_prev_species_10M_list <- contam.prev.species_10M[which(contam.prev.species_10M$contaminant=="TRUE"), ]
+not_contam_10M_list <- contam.prev.species_10M[which(contam.prev.species_10M$contaminant=="FALSE"), ]
+
+#Which of these contaminants are considered oral?
+oral_species <- fread("./00-documentation/dsvss_gtdb_r207_species_sources.tsv", header = TRUE) %>%
+  filter(str_detect(Isolation_Source, "oral"))
+
+contam_list_10M <- cont_prev_species_10M_list %>%
+  rownames_to_column("Species") %>%
+  right_join(., oral_species, by = "Species") %>%
+  filter(str_detect(Isolation_Source, "oral")) %>%
+  filter(!is.na(contaminant))
+
+# Look at the histogram - does the probability threshold need to be changed?
+ggplot(contam.prev.species_10M, aes(x=p)) +
+  geom_histogram(bins=100) +
+  scale_y_log10() +
+  ggtitle('Prevalence - Species') +
+  theme_minimal()
+
+```
+
+
+```{r}
+#remove contaminants from kraken2 full filtered table (just ancient samples)
+contaminant_list_10M <- cont_prev_species_10M_list %>%
+  rownames_to_column("Species") %>%
+  dplyr::select(Species) %>%
+  pull()
+
+kraken2_10M_filtered_decontam <- kraken2_10M_filtered %>%
+  filter(!(Species %in% contaminant_list_10M)) 
+
+#fwrite(kraken2_10M_filtered_decontam, "./05-results/normalize_eager/dsvss_npre_w_read_length_kraken2_gtdb207_total_species_decontam.tsv", sep = "\t")
+```
+
+
+```{r}
+#Prepare kraken2 tables for 3 runs - (1) no normalization + sources, (2) over 50 bp + sources, (3) under 50 bp + sources
+
+#Read in sources kraken2 table
+sources_kraken2 <- fread("./05-results/normalize_eager/dsvss_npre_w_read_length_kraken2_gtdb207_total_species_decontam.tsv")
+
+#temporarily take out sloan 2017 environmental samples because they have too few species to filter
+mappingfile_10M <- fread("./05-results/normalize_eager/dsvss_npre_source_tracker_mappingfile_complete.tsv") 
+
+enviro_samples <- mappingfile_10M %>%
+  filter(str_detect(Study, "sloan2017")) %>%
+  rename(Sample = 1) %>%
+  dplyr::select(Sample) %>%
+  pull()
+
+sources_kraken2_no_enviro <- sources_kraken2 %>%
+  dplyr::select(!one_of(enviro_samples))
+
+#remove control samples
+controls <- fread("./00-documentation/controls_metadata.csv") %>%
+  dplyr::select(Library_ID) %>%
+  pull()
+
+sources_kraken2_no_enviro <- sources_kraken2_no_enviro %>%
+  dplyr::select(!one_of(controls))
+
+#Calculate total counts of each species 
+sources_kraken2_totals <-  sources_kraken2_no_enviro %>%
+  column_to_rownames("Species") %>%
+   mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  rownames_to_column("Species") %>%
+  relocate("Total", .after = Species) 
+
+#Determine the total amount of counts across species
+total_sum <- sum(sources_kraken2_totals$Total)
+
+#Calculate the relative abundance and filter for species only greater than or equal to 0.005%
+sources_kraken2_abundance <- sources_kraken2_totals %>%
+  mutate(Relative_Abundance = (Total / total_sum)*100) %>%
+  relocate(Relative_Abundance, .after = Species) 
+
+sources_kraken2_filtered <- sources_kraken2_abundance %>%
+  filter(Relative_Abundance >= 0.005) %>% #using a 0.005% cut-off
+  dplyr::select(-Total, -Relative_Abundance)
+
+#add back the environmental samples but remove species with a total of 0 
+sources_kraken2_enviro <- sources_kraken2 %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(one_of(enviro_samples)) %>%
+  mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  rownames_to_column("Species") %>%
+  relocate("Total", .after = Species) %>%
+  filter(Total > 0) %>%
+  dplyr::select(-Total)
+
+sources_kraken2_filtered <- sources_kraken2_filtered %>%
+  full_join(., sources_kraken2_enviro) %>%
+  mutate_all(~replace(., is.na(.), 0)) %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(sort(names(.))) %>%
+  rownames_to_column("Species") 
+  
+#(1) No normalization + sources
+no_norm_10M_samples <- fread("./05-results/normalize_eager/dsvss_npre_source_tracker_mappingfile_complete.tsv") %>%
+  filter(str_detect(SourceSink, "sink")) %>%
+  filter(!str_detect(`#SampleID`, "50bp")) %>%
+  dplyr::select(`#SampleID`) %>%
+  pull()
+
+no_norm_10M_mappingfile <- fread("./05-results/normalize_eager/dsvss_npre_source_tracker_mappingfile_complete.tsv") %>%
+  filter(!str_detect(`#SampleID`, "50bp")) %>%
+  arrange(`#SampleID`) 
+
+#fwrite(no_norm_10M_mappingfile, "./05-results/normalize_eager/dsvss_npre_no_read_length_sourcetracker_input_mapping_file.tsv", sep = "\t", quote = F)
+
+kraken2_10M_filtered_decontam_no_norm <- kraken2_10M_filtered_decontam %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(one_of(no_norm_10M_samples)) %>%
+  rownames_to_column("Species") %>%
+  full_join(., sources_kraken2_filtered) %>%
+  mutate_all(~replace(., is.na(.), 0)) %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(sort(names(.)))  %>%
+  rownames_to_column("Species") %>%
+  rename('#OTU ID' = Species)
+
+#fwrite(kraken2_10M_filtered_decontam_no_norm, "./05-results/normalize_eager/dsvss_npost_no_read_length_sourcetracker_input_decontam_species_table.txt", sep = "\t", quote = F)
+
+#(2) over50bp + sources
+over50bp_10M_samples <- fread("./05-results/normalize_eager/dsvss_npre_source_tracker_mappingfile_complete.tsv") %>%
+  filter(str_detect(SourceSink, "sink")) %>%
+  filter(str_detect(`#SampleID`, "over50bp")) %>%
+  dplyr::select(`#SampleID`) %>%
+  pull()
+
+over50bp_10M_mappingfile <- fread("./05-results/normalize_eager/dsvss_npre_source_tracker_mappingfile_complete.tsv") %>%
+   filter(!str_detect(`#SampleID`, "_10M$")) %>%
+  filter(!str_detect(`#SampleID`, "under50bp")) %>%
+  arrange(`#SampleID`) 
+
+#fwrite(over50bp_10M_mappingfile, "./05-results/normalize_eager/dsvss_npre_over50bp_sourcetracker_input_mapping_file.tsv", sep = "\t", quote = F)
+
+kraken2_10M_over50bp_filtered_decontam_no_norm <- kraken2_10M_filtered_decontam %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(one_of(over50bp_10M_samples)) %>%
+  rownames_to_column("Species") %>%
+  full_join(., sources_kraken2_filtered) %>%
+  mutate_all(~replace(., is.na(.), 0)) %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(sort(names(.)))  %>%
+  rownames_to_column("Species") %>%
+  rename('#OTU ID' = Species)
+
+#fwrite(kraken2_10M_over50bp_filtered_decontam_no_norm, "./05-results/normalize_eager/dsvss_npre_over50bp_sourcetracker_input_decontam_species_table.txt", sep = "\t", quote = F)
+
+#(3) under50bp + sources
+under50bp_10M_samples <- fread("./05-results/normalize_eager/dsvss_npre_source_tracker_mappingfile_complete.tsv") %>%
+  filter(str_detect(SourceSink, "sink")) %>%
+  filter(str_detect(`#SampleID`, "under50bp")) %>%
+  dplyr::select(`#SampleID`) %>%
+  pull()
+
+under50bp_10M_mappingfile <- fread("./05-results/normalize_eager/dsvss_npre_source_tracker_mappingfile_complete.tsv") %>%
+   filter(!str_detect(`#SampleID`, "_10M$")) %>%
+  filter(!str_detect(`#SampleID`, "over50bp")) %>%
+  arrange(`#SampleID`) 
+
+#fwrite(under50bp_10M_mappingfile, "./05-results/normalize_eager/dsvss_npre_under50bp_sourcetracker_input_mapping_file.tsv", sep = "\t", quote = F)
+
+kraken2_10M_under50bp_filtered_decontam_no_norm <- kraken2_10M_filtered_decontam %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(one_of(under50bp_10M_samples)) %>%
+  rownames_to_column("Species") %>%
+  full_join(., sources_kraken2_filtered) %>%
+  mutate_all(~replace(., is.na(.), 0)) %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(sort(names(.)))  %>%
+  rownames_to_column("Species") %>%
+  rename('#OTU ID' = Species)
+
+#fwrite(kraken2_10M_under50bp_filtered_decontam_no_norm, "./05-results/normalize_eager/dsvss_npre_under50bp_sourcetracker_input_decontam_species_table.txt", sep = "\t", quote = F)
+```
+
+
+```{r}
+#check rarefaction value - based on being close to sum of lowest count (make sure its not ABOVE sample count)
+kraken2_filtered_decontam.dataframe <- kraken2_10M_under50bp_filtered_decontam_no_norm %>%
+  rename(Species = 1) %>%
+  gather("Library_ID","Counts", 2:ncol(.)) %>%
+  spread(Species,Counts) %>%
+  arrange(Library_ID) 
+
+library_ids <- kraken2_filtered_decontam.dataframe$Library_ID
+
+species_counts <- rowSums(kraken2_filtered_decontam.dataframe[, -1])
+
+species_counts_with_id <- cbind('#SampleID' = library_ids, Species_Counts = species_counts)
+
+species_counts_with_id_table <- as.data.frame(species_counts_with_id) %>%
+  full_join(., under50bp_10M_mappingfile) %>%
+  mutate(Species_Counts = as.numeric(Species_Counts))
+
+#lowest no norm = 1,998 (GUE001.A0102.SG1.4_10M_over50bp) 
+#lowest over 50 = 1,998 (GUE001.A0102.SG1.4_10M_over50bp) 
+#lowest under 50 = 871 (GUE001.A0102.SG1.4_10M_under50bp)
+
+```
+
+# No normalization 
+
+```{r}
+#Read in kraken2 table
+kraken2_no_norm <- fread("./05-results/no_normalization/dsvss_NN_kraken2_gtdb207_total_species.tsv")
+
+#Bone samples and library blanks 
+control_samples <- fread("./00-documentation/controls_metadata.csv") %>%
+  dplyr::select(Library_ID) %>%
+  pull()
+
+kraken2_controls <- fread("./05-results/dsvss_sources_controls_kraken2_gtdb207_total_species.tsv") %>%
+  rename_with(~ str_remove(., "\\.(SG1|ST1)$")) %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(one_of(control_samples)) %>%
+  rownames_to_column("Species")
+
+#removed: `EXB015.A2001`, `EXB015.A2101`
+```
+
+
+```{r}
+#Calculate total counts of each species 
+no_norm_totals <-  kraken2_no_norm %>%
+  column_to_rownames("Species") %>%
+   mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  rownames_to_column("Species") %>%
+  relocate("Total", .after = Species) 
+
+#Determine the total amount of counts across species
+total_sum <- sum(no_norm_totals$Total)
+
+#Calculate the relative abundance and filter for species only greater than or equal to 0.01%
+no_norm_abundance <- no_norm_totals %>%
+  mutate(Relative_Abundance = (Total / total_sum)*100) %>%
+  relocate(Relative_Abundance, .after = Species) 
+
+no_norm_filtered <- no_norm_abundance %>%
+  filter(Relative_Abundance >= 0.005) %>% #using a 0.005% cut-off
+  dplyr::select(-Total, -Relative_Abundance)
+
+# 0.005% = 709
+
+```
+
+```{r}
+#Bone samples and library blanks
+
+#Calculate total counts of each species 
+kraken2_controls_totals <-  kraken2_controls %>%
+  column_to_rownames("Species") %>%
+   mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  rownames_to_column("Species") %>%
+  relocate("Total", .after = Species) 
+
+#Determine the total amount of counts across species
+total_sum <- sum(kraken2_controls_totals$Total)
+
+#Calculate the relative abundance and filter for species only greater than or equal to 0.01%
+kraken2_controls_abundance <- kraken2_controls_totals %>%
+  mutate(Relative_Abundance = (Total / total_sum)*100) %>%
+  relocate(Relative_Abundance, .after = Species) 
+
+kraken2_controls_filtered <- kraken2_controls_abundance %>%
+  filter(Relative_Abundance >= 0.005) %>% #using a 0.005% cut-off
+  dplyr::select(-Total, -Relative_Abundance)
+
+# 0.005% = 3,696
+# 0.001% = 13,023
+# 0.01% = 1,552
+# 0.05% = 181
+```
+
+```{r}
+#Combine sample and control kraken2 tables to run decontam
+no_norm_full <- no_norm_filtered %>%
+  full_join(., kraken2_controls_filtered) %>%
+  mutate_all(~replace(., is.na(.), 0)) %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(order(colnames(.))) %>%
+  rownames_to_column("Species")
+
+```
+
+
+```{r}
+#Correctly format mapping file for SourceTracker
+mapfile_no_norm <- fread("./05-results/no_normalization/dsvss_NN_source_tracker_mappingfile_complete.tsv") %>%
+  rename(Sample = 1) %>%
+  filter(str_detect(Sample, "SG")) %>%
+  rename('#SampleID' = 1)
+  
+controls <- fread("./00-documentation/controls_metadata.csv") %>%
+  filter(!Library_ID == "EXB015.A2001",
+         !Library_ID == "EXB015.A2101") %>%
+  rename('#SampleID' = 1)
+
+mapfile_no_norm_complete <- mapfile_no_norm %>%
+  full_join(., controls) %>%
+  rename(Library_ID = 1) %>%
+  arrange(Library_ID)
+
+
+```
+
+
+##Decontam
+```{r}
+#Prepare metadata
+#Assign sample-type status to identify control samples
+mapfile_no_norm_complete$is.control <- mapfile_no_norm_complete$SourceSink=="Control"
+```
+
+
+```{r}
+#already removed NAs from species column
+no_norm_species.dataframe <- no_norm_full %>%
+  replace(is.na(.), 0) %>%
+  gather("Library_ID","Counts", 2:ncol(.)) %>%
+  spread(Species,Counts) %>%
+  arrange(Library_ID) 
+
+names <- colnames(no_norm_full) 
+
+mapfile_no_norm_complete %>%
+  filter(!Library_ID %in% names)
+
+#make a matrix for decontam
+no_norm_species.matrix <- data.matrix(no_norm_species.dataframe[2:ncol(no_norm_species.dataframe)])
+rownames(no_norm_species.matrix) <- no_norm_species.dataframe$Library_ID 
+
+
+#Try changing the probability threshold cut-off to see how many more or less are ID'd as contaminants
+contam.prev.species_no_norm <- isContaminant(no_norm_species.matrix, method="prevalence", 
+                                 neg=mapfile_no_norm_complete$is.control, 
+                                 threshold = 0.9)
+
+#Check number of contaminants
+table(contam.prev.species_no_norm$contaminant)
+
+#List of contaminants
+cont_prev_species_no_norm_list <- contam.prev.species_no_norm[which(contam.prev.species_no_norm$contaminant=="TRUE"), ]
+not_contam_no_norm_list <- contam.prev.species_no_norm[which(contam.prev.species_no_norm$contaminant=="FALSE"), ]
+
+#Which of these contaminants are considered oral?
+oral_species <- fread("./00-documentation/dsvss_gtdb_r207_species_sources.tsv", header = TRUE) %>%
+  filter(str_detect(Isolation_Source, "oral"))
+
+contam_list_no_norm <- cont_prev_species_no_norm_list %>%
+  rownames_to_column("Species") %>%
+  right_join(., oral_species, by = "Species") %>%
+  filter(str_detect(Isolation_Source, "oral")) %>%
+  filter(!is.na(contaminant))
+
+# Look at the histogram - does the probability threshold need to be changed?
+ggplot(contam.prev.species_no_norm, aes(x=p)) +
+  geom_histogram(bins=100) +
+  scale_y_log10() +
+  ggtitle('Prevalence - Species') +
+  theme_minimal()
+
+```
+
+
+```{r}
+#remove contaminants from kraken2 full filtered table (just ancient samples)
+contaminant_list_no_norm <- cont_prev_species_no_norm_list %>%
+  rownames_to_column("Species") %>%
+  dplyr::select(Species) %>%
+  pull()
+
+no_norm_filtered_decontam <- no_norm_filtered %>%
+  filter(!(Species %in% contaminant_list_no_norm)) 
+
+#fwrite(no_norm_filtered_decontam, "./05-results/no_normalization/dsvss_NN_kraken2_gtdb207_total_species_decontam.tsv", sep = "\t")
+```
+
+
+```{r}
+#Prepare kraken2 table with sources for sourcetracker run
+
+#Read in sources kraken2 table
+sources_kraken2 <- fread("./05-results/dsvss_sources_controls_kraken2_gtdb207_total_species.tsv")
+
+#temporarily take out sloan 2017 environmental samples because they have too few species to filter
+mappingfile_no_norm <- fread("./05-results/no_normalization/dsvss_NN_source_tracker_mappingfile_complete.tsv") 
+
+enviro_samples <- mappingfile_no_norm %>%
+  filter(str_detect(Study, "sloan2017")) %>%
+  rename(Sample = 1) %>%
+  dplyr::select(Sample) %>%
+  pull()
+
+sources_kraken2_no_enviro <- sources_kraken2 %>%
+  dplyr::select(!one_of(enviro_samples))
+
+#remove control samples
+controls <- fread("./00-documentation/controls_metadata.csv") %>%
+  dplyr::select(Library_ID) %>%
+  pull()
+
+sources_kraken2_no_enviro <- sources_kraken2_no_enviro %>%
+  dplyr::select(!one_of(controls))
+
+#Calculate total counts of each species 
+sources_kraken2_totals <-  sources_kraken2_no_enviro %>%
+  column_to_rownames("Species") %>%
+   mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  rownames_to_column("Species") %>%
+  relocate("Total", .after = Species) 
+
+#Determine the total amount of counts across species
+total_sum <- sum(sources_kraken2_totals$Total)
+
+#Calculate the relative abundance and filter for species only greater than or equal to 0.005%
+sources_kraken2_abundance <- sources_kraken2_totals %>%
+  mutate(Relative_Abundance = (Total / total_sum)*100) %>%
+  relocate(Relative_Abundance, .after = Species) 
+
+sources_kraken2_filtered <- sources_kraken2_abundance %>%
+  filter(Relative_Abundance >= 0.005) %>% #using a 0.005% cut-off
+  dplyr::select(-Total, -Relative_Abundance)
+
+#add back the environmental samples but remove species with a total of 0 
+sources_kraken2_enviro <- sources_kraken2 %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(one_of(enviro_samples)) %>%
+  mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  rownames_to_column("Species") %>%
+  relocate("Total", .after = Species) %>%
+  filter(Total > 0) %>%
+  dplyr::select(-Total)
+
+sources_kraken2_filtered <- sources_kraken2_filtered %>%
+  full_join(., sources_kraken2_enviro) %>%
+  mutate_all(~replace(., is.na(.), 0)) %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(sort(names(.))) %>%
+  rownames_to_column("Species") 
+  
+# No normalization + sources
+
+no_norm_filtered_decontam_full <- no_norm_filtered_decontam %>%
+  full_join(., sources_kraken2_filtered) %>%
+  mutate_all(~replace(., is.na(.), 0)) %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(sort(names(.)))  %>%
+  rownames_to_column("Species") %>%
+  rename('#OTU ID' = Species)
+
+#fwrite(no_norm_filtered_decontam_full, "./05-results/no_normalization/dsvss_NN_sourcetracker_input_decontam_species_table.txt", sep = "\t", quote = F)
+
+```
+
+
+```{r}
+#check rarefaction value - based on being close to sum of lowest count (make sure its not ABOVE sample count)
+no_norm_filtered_decontam.dataframe <- no_norm_filtered_decontam_full %>%
+  rename(Species = 1) %>%
+  gather("Library_ID","Counts", 2:ncol(.)) %>%
+  spread(Species,Counts) %>%
+  arrange(Library_ID) 
+
+library_ids <- no_norm_filtered_decontam.dataframe$Library_ID
+
+species_counts <- rowSums(no_norm_filtered_decontam.dataframe[, -1])
+
+species_counts_with_id <- cbind('#SampleID' = library_ids, Species_Counts = species_counts)
+
+species_counts_with_id_table <- as.data.frame(species_counts_with_id) %>%
+  full_join(., no_norm_mappingfile) %>%
+  mutate(Species_Counts = as.numeric(Species_Counts))
+
+#lowest no norm = 3,113 (ERR1883437) - 16
+
+
+```

@@ -1,0 +1,15 @@
+# table produced by mapDamage version 2.2.3
+# using mapped file /mnt/archgen/microbiome_calculus/library_ds_vs_ss/04-analysis/normalize_kraken/mapping/aggregatibacter_kilianii/out/GDN001.A0101.SG1.1_5M.mapped_a_kilianii_q25l30_rmdup.bam and /mnt/archgen/microbiome_calculus/library_ds_vs_ss/04-analysis/normalize_kraken/mapping/aggregatibacter_kilianii/input/GCF_963519225.1_ERR9968767_bin.6_MetaWRAP_v1.3_MAG_genomic.fna as reference file
+# Std: strand of reads
+Std	Length	Occurences 
++	30	2
++	34	1
++	47	1
++	93	1
++	33	1
++	32	1
++	31	2
+-	35	1
+-	38	1
+-	31	1
+-	34	1

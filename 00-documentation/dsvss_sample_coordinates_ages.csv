@@ -1,0 +1,11 @@
+Site	Site_Name	Individual_ID	Latitude	Longitude	Species	Number_of_Individuals	Date (BP)	log_date
+CDM	Camino del Molino	CDM019	38.102	-1.865441	Homo sapiens (modern human)	2	4,200	3.6232492903979
+GOY	Goyet Cave	GOY005	50.446667	5.008889	Homo neandertalensis (Neanderthal)	2	42,800	4.63144376901317
+PES	Pešturina	PES001	43.1666667	21.9	Homo neandertalensis (Neanderthal)	1	102,000	5.00860017176192
+GUE	La Güelga	GUE001	43.533333	-5.833333	Homo neandertalensis (Neanderthal)	1	44,000	4.64345267648619
+BAN	Banyoles	BAN001	42.118127	2.765159	Homo neandertalensis (Neanderthal)	1	66,000	4.81954393554187
+ZAF	Cueva del Boquete de Zafarraya	ZAF001	36.951212	-4.127421	Homo neandertalensis (Neanderthal)	1	46,000	4.66275783168157
+VLD	Cueva de Valdegoba	VLD001	42.544069	-3.773921	Homo neandertalensis (Neanderthal)	1	48,000	4.68124123737559
+SPM	Sima de las Palomas	SPM002	37.743133	-0.953902	Homo neandertalensis (Neanderthal)	1	55,000	4.74036268949424
+GDN	Grotta De Nadale	GDN001	45.442664	11.518463	Homo neandertalensis (Neanderthal)	1	70,000	4.84509804001426
+FUM	Fumane	FUM001	45.591	10.905	Homo neandertalensis (Neanderthal)	3	48,500	4.68574173860226

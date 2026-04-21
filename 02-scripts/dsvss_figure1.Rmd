@@ -1,0 +1,72 @@
+---
+title: "Figure 1"
+author: "Keri Burge"
+date: "`r format(Sys.time(), '%b %d, %Y')`"
+output:
+    github_document:
+        fig_width: 8
+        fig_height: 6
+        toc: true
+---
+
+```{r, eval=TRUE, echo=FALSE, message=FALSE}
+#install.packages("maps")
+
+library(knitr)
+library(dplyr)
+library(ggplot2)
+library(viridis)
+library(data.table)
+library(ggmap)
+library(tidyverse)
+
+```
+
+
+```{r setup}
+knitr::opts_knit$set(root.dir = normalizePath(".."))
+```
+
+
+#A: Sample map
+```{r}
+#Load in sample coordinates
+sample_coords <- fread("./00-documentation/dsvss_sample_coordinates_ages.csv") 
+
+#create a map of western europe
+some_eu_countries <- c(
+  "Portugal", "Spain", "France", "Switzerland", "Germany",
+  "Austria", "Belgium", "UK", "Netherlands",
+  "Denmark", "Poland", "Italy", 
+  "Croatia", "Slovenia", "Hungary", "Slovakia",
+  "Czech republic", "Bosnia and Herzegovina", "Serbia"
+)
+
+#retrieve the map data of just those countries of interest
+some_eu_maps <- map_data("world", region = some_eu_countries)
+
+#plot the map
+map <- ggplot() +
+  geom_polygon(data = some_eu_maps, aes(x = long, y = lat, group = group), fill = "#ECECEC", color = "darkgrey") +
+  geom_point(data = sample_coords, aes(x = Longitude, y = Latitude, shape = Species, color = log_date), size = 4.5) +
+  #scale_color_viridis(option = "plasma", name = "Date (BP)") +
+  scale_color_viridis(
+    option = "plasma",
+    name = "Date (BP)",
+    breaks = c(3.5, 3.75, 4.00, 4.25, 4.50, 4.75, 5.00),
+    limits = c(3.5, 5.01)) +
+  theme(legend.position = "right") +
+  labs(title = "", x = "Longitude", y = "Latitude") +
+  theme_minimal() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  geom_text(data = sample_coords, aes(x = Longitude, y = Latitude, label = Site), size = 3, vjust = -0.5) #add sample labels
+
+map
+
+#ggsave("./06-publication/main_figures/Figure_1A_map.pdf", plot = map, device = "pdf", scale = 1, width = 8, height = 5, units = c("in"), dpi = 300)
+
+```
+
+
+
+

@@ -1,0 +1,938 @@
+---
+title: "Duplication Plots"
+author: "Keri Burge"
+date: "`r format(Sys.time(), '%b %d, %Y')`"
+output:
+    github_document:
+        fig_width: 8
+        fig_height: 6
+        toc: true
+---
+
+```{r, eval=TRUE, echo=FALSE, message=FALSE}
+#Load in all necessary packages
+library(knitr)
+library(data.table)
+library(ggplot2)
+library(ggpubr)
+library(rstatix)
+library(dplyr)
+library(tidyverse)
+```
+
+
+```{r setup}
+knitr::opts_knit$set(root.dir = normalizePath(".."))
+```
+
+
+#Function to read in duplication tables
+Input: table with unique sequences (column 2), the number of times that sequence is present (column 1), and the length of the sequence (column 3)
+##Merged reads
+Table showing the counts of unique reads duplicated a certain number of times
+```{r}
+#table showing how many sequences are duplicated a certain number of times
+unique_counts_table_merged <- function(duplication_files_merged, metadata_file) {
+  unique_counts <- lapply(duplication_files_merged, function(fn) {
+    fread(fn) %>%
+    rename(number_of_duplications = 1, sequence = 2, length = 3) %>%
+    #filter(!number_of_duplications == 1) %>% #filter out reads that aren't duplicates!
+    mutate(sequence_counts_tmp = 1) %>%
+    group_by(number_of_duplications) %>%  
+    summarize(unique_reads = sum(sequence_counts_tmp, na.rm = TRUE)) %>%
+    arrange(number_of_duplications) %>%
+    mutate(Sequencing_ID = basename(fn)) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "_merged_counts_with_lengths.txt", "")) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "_oral", "")) %>%
+    mutate(read_type = "merged")
+  })
+  
+  unique_counts_df <- do.call(rbind, unique_counts) 
+  unique_counts_df <- unique_counts_df %>%
+    full_join(., metadata_file %>%
+                dplyr::select(Sequencing_ID, Strandedness, Library_ID))
+  
+  return(unique_counts_df)
+}
+```
+
+##Unmerged reads
+Table showing the counts of unique reads duplicated a certain number of times
+```{r}
+#table showing how many sequences are duplicated a certain number of times
+unique_counts_table_unmerged <- function(duplication_files_unmerged, metadata_file) {
+  unique_counts <- lapply(duplication_files_unmerged, function(fn) {
+    fread(fn) %>%
+    rename(number_of_duplications = 1, sequence = 2, length = 3) %>%
+    #filter(!number_of_duplications == 1) %>% #filter out reads that aren't duplicates!
+    mutate(sequence_counts_tmp = 1) %>%
+    group_by(number_of_duplications) %>%  
+    summarize(unique_reads = sum(sequence_counts_tmp, na.rm = TRUE)) %>%
+    arrange(number_of_duplications) %>%
+    mutate(Sequencing_ID = basename(fn)) %>%
+    mutate(Sequencing_ID = str_replace(Sequencing_ID, "_unmerged_counts_with_lengths.txt", "")) %>%
+      mutate(Sequencing_ID = str_replace(Sequencing_ID, "_oral", "")) %>%
+    mutate(read_type = "unmerged")
+  })
+  
+  unique_counts_df <- do.call(rbind, unique_counts) 
+  unique_counts_df <- unique_counts_df %>%
+    full_join(., metadata_file %>%
+                dplyr::select(Sequencing_ID, Strandedness, Library_ID))
+  
+  return(unique_counts_df)
+}
+
+
+```
+
+#No normalization (NN)
+##Metadata
+```{r}
+metadata_no_norm <- fread("./05-results/no_normalization/dsvss_no_normalization_metadata.tsv")
+```
+
+##Classified reads
+```{r}
+#Merged reads
+#duplication files for each library - files list (1) counts, (2) sequence, (3) length of sequence
+duplication_files_merged_classified <- list.files(path = "./05-results/no_normalization/duplication/classified_reads/merged_reads", pattern = "_merged_counts_with_lengths.txt", full.names = T)
+
+unique_counts_merged_classified <- unique_counts_table_merged(duplication_files_merged_classified, metadata_no_norm) 
+
+fwrite(unique_counts_merged_classified, "./05-results/no_normalization/dsvss_no_norm_classified_merged_duplicated_reads.tsv", sep = "\t")
+
+Unmerged reads
+duplication_files_unmerged_classified <- list.files(path = "./05-results/no_normalization/duplication/classified_reads/unmerged_reads", pattern = "_unmerged_counts_with_lengths.txt", full.names = T)
+
+unique_counts_unmerged_classified <- unique_counts_table_unmerged(duplication_files_unmerged_classified, metadata_no_norm) 
+
+fwrite(unique_counts_unmerged_classified, "./05-results/no_normalization/dsvss_no_norm_classified_unmerged_duplicated_reads.tsv", sep = "\t")
+```
+The above code generates the tables loaded in below (unique_counts_merged and unique_counts_unmerged)
+
+Read in the tables
+```{r}
+unique_counts_merged <- fread("./05-results/no_normalization/dsvss_no_norm_classified_merged_duplicated_reads.tsv")
+
+unique_counts_unmerged <- fread("./05-results/no_normalization/dsvss_no_norm_classified_unmerged_duplicated_reads.tsv")
+
+unique_counts_merged2 <- unique_counts_merged %>%
+  dplyr::select(-read_type) %>%
+  rename(unique_reads_merged = unique_reads)
+
+unique_counts_unmerged2 <- unique_counts_unmerged %>%
+  dplyr::select(-read_type) %>%
+  rename(unique_reads_unmerged = unique_reads)
+
+unique_counts_combined <- unique_counts_merged2 %>%
+  full_join(., unique_counts_unmerged2, c("number_of_duplications", "Sequencing_ID", "Strandedness", "Library_ID")) %>%
+  mutate(across(everything(), ~ replace_na(.x, 0)))
+
+
+```
+
+
+Plot
+Create a stacked proportion var chart that shows what proportion of all reads falls into duplication bins (unique, duplicated 2x, 3-5x, 6-10x, >10x)
+```{r}
+unique_categories <- unique_counts_combined %>%
+  mutate(duplication_category = case_when(
+          number_of_duplications == 1 ~ "unique",
+          number_of_duplications == 2 ~ "2x",
+          number_of_duplications >= 3 & number_of_duplications <= 5  ~ "3-5x",
+          number_of_duplications >= 6 & number_of_duplications <= 10 ~ "6-10x",
+          number_of_duplications > 10 ~ ">10x")
+         ) %>%
+  #mutate(duplication_category = factor(duplication_category, levels = c("unique", "2x", "3-5x", "6-10x", ">10x"))) %>%
+  mutate(duplication_category = factor(duplication_category, levels = c(">10x", "6-10x", "3-5x", "2x", "unique"))) %>%
+  mutate(total_reads_merged = number_of_duplications*unique_reads_merged) %>%
+  mutate(total_reads_unmerged = number_of_duplications*unique_reads_unmerged)
+
+color_categories <- c("unique" = "grey",
+                      "2x" = "#88CCEE",
+                      "3-5x" = "#44AA99",
+                      "6-10x" = "#DDCC77",
+                      ">10x" = "#CC6677")
+
+unique_merged_categories <- unique_categories %>%
+  mutate(Individual_ID = Library_ID) %>%
+  separate(Individual_ID, into = "Individual_ID", sep = "\\.", extra = "drop") %>%
+  ggplot(aes(x = Individual_ID, y = total_reads_merged, fill = duplication_category)) +
+    geom_bar(position = "fill", stat = "identity") +
+    labs(y = "Reads Classified by Kraken2 (%)") +
+    facet_wrap(~Strandedness) +
+    theme_minimal() +
+    scale_fill_manual(name = "Duplication Category", values = color_categories) +
+  theme(legend.position = "right",
+          axis.text.x = element_text(angle = 90, hjust = 0, size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14))
+
+
+unique_merged_categories
+
+unique_unmerged_categories <- unique_categories %>%
+  mutate(Individual_ID = Library_ID) %>%
+  separate(Individual_ID, into = "Individual_ID", sep = "\\.", extra = "drop") %>%
+  ggplot(aes(x = Individual_ID, y = total_reads_unmerged, fill = duplication_category)) +
+    geom_bar(position = "fill", stat = "identity") +
+    labs(y = "Reads Classified by Kraken2 (%)") +
+    facet_wrap(~Strandedness) +
+    theme_minimal() +
+    scale_fill_manual(name = "Duplication Category", values = color_categories) +
+   theme(legend.position = "right",
+          axis.text.x = element_text(angle = 90, hjust = 0, size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14))
+
+unique_unmerged_categories
+
+unique_counts_categories <- ggarrange(
+  unique_merged_categories, unique_unmerged_categories, 
+  labels = c("Merged", "Unmerged"), 
+  ncol = 2, nrow = 1, 
+  legend = "right", common.legend = TRUE
+)
+
+unique_counts_categories
+
+#ggsave("./06-publication/supplemental_figures/NN_classified_reads_duplication_percentage_categories.pdf", plot = unique_counts_categories, device = "pdf", scale = 1, width = 20, height = 5, units = c("in"), dpi = 300)
+```
+
+
+##Oral reads
+```{r}
+#Merged reads
+#duplication files for each library - files list (1) counts, (2) sequence, (3) length of sequence
+duplication_files_merged_oral <- list.files(path = "./05-results/no_normalization/duplication/oral_reads/merged_reads", pattern = "_merged_counts_with_lengths.txt", full.names = T)
+
+unique_counts_merged_oral <- unique_counts_table_merged(duplication_files_merged_oral, metadata_no_norm) 
+
+#fwrite(unique_counts_merged_oral, "./05-results/no_normalization/dsvss_no_norm_oral_merged_duplicated_reads.tsv", sep = "\t")
+
+#Unmerged reads
+duplication_files_unmerged_oral <- list.files(path = "./05-results/no_normalization/duplication/oral_reads/unmerged_reads", pattern = "_unmerged_counts_with_lengths.txt", full.names = T)
+
+unique_counts_unmerged_oral <- unique_counts_table_unmerged(duplication_files_unmerged_oral, metadata_no_norm) 
+
+#fwrite(unique_counts_unmerged_oral, "./05-results/no_normalization/dsvss_no_norm_oral_unmerged_duplicated_reads.tsv", sep = "\t")
+```
+The above code generates the tables loaded in below (unique_counts_merged and unique_counts_unmerged)
+
+Read in the tables
+```{r}
+unique_counts_merged <- fread("./05-results/no_normalization/dsvss_no_norm_oral_merged_duplicated_reads.tsv")
+
+unique_counts_unmerged <- fread("./05-results/no_normalization/dsvss_no_norm_oral_unmerged_duplicated_reads.tsv")
+
+unique_counts_merged2 <- unique_counts_merged %>%
+  dplyr::select(-read_type) %>%
+  rename(unique_reads_merged = unique_reads)
+
+unique_counts_unmerged2 <- unique_counts_unmerged %>%
+  dplyr::select(-read_type) %>%
+  rename(unique_reads_unmerged = unique_reads)
+
+unique_counts_combined <- unique_counts_merged2 %>%
+  full_join(., unique_counts_unmerged2, c("number_of_duplications", "Sequencing_ID", "Strandedness", "Library_ID")) %>%
+  mutate(across(everything(), ~ replace_na(.x, 0)))
+
+
+```
+
+
+Plot
+Create a stacked proportion var chart that shows what proportion of all reads falls into duplication bins (unique, duplicated 2x, 3-5x, 6-10x, >10x)
+```{r}
+unique_categories <- unique_counts_combined %>%
+  mutate(duplication_category = case_when(
+          number_of_duplications == 1 ~ "unique",
+          number_of_duplications == 2 ~ "2x",
+          number_of_duplications >= 3 & number_of_duplications <= 5  ~ "3-5x",
+          number_of_duplications >= 6 & number_of_duplications <= 10 ~ "6-10x",
+          number_of_duplications > 10 ~ ">10x")
+         ) %>%
+  #mutate(duplication_category = factor(duplication_category, levels = c("unique", "2x", "3-5x", "6-10x", ">10x"))) %>%
+  mutate(duplication_category = factor(duplication_category, levels = c(">10x", "6-10x", "3-5x", "2x", "unique"))) %>%
+  mutate(total_reads_merged = number_of_duplications*unique_reads_merged) %>%
+  mutate(total_reads_unmerged = number_of_duplications*unique_reads_unmerged)
+
+color_categories <- c("unique" = "grey",
+                      "2x" = "#88CCEE",
+                      "3-5x" = "#44AA99",
+                      "6-10x" = "#DDCC77",
+                      ">10x" = "#CC6677")
+
+unique_merged_categories <- unique_categories %>%
+  mutate(Individual_ID = Library_ID) %>%
+  separate(Individual_ID, into = "Individual_ID", sep = "\\.", extra = "drop") %>%
+  ggplot(aes(x = Individual_ID, y = total_reads_merged, fill = duplication_category)) +
+    geom_bar(position = "fill", stat = "identity") +
+    labs(y = "Reads Classified as Oral (%)") +
+    facet_wrap(~Strandedness) +
+    theme_minimal() +
+    scale_fill_manual(name = "Duplication Category", values = color_categories) +
+  theme(legend.position = "right",
+          axis.text.x = element_text(angle = 90, hjust = 0, size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14))
+
+
+unique_merged_categories
+
+unique_unmerged_categories <- unique_categories %>%
+  mutate(Individual_ID = Library_ID) %>%
+  separate(Individual_ID, into = "Individual_ID", sep = "\\.", extra = "drop") %>%
+  ggplot(aes(x = Individual_ID, y = total_reads_unmerged, fill = duplication_category)) +
+    geom_bar(position = "fill", stat = "identity") +
+    labs(y = "Reads Classified as Oral (%)") +
+    facet_wrap(~Strandedness) +
+    theme_minimal() +
+    scale_fill_manual(name = "Duplication Category", values = color_categories) +
+   theme(legend.position = "right",
+          axis.text.x = element_text(angle = 90, hjust = 0, size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14))
+
+unique_unmerged_categories
+
+unique_counts_categories <- ggarrange(
+  unique_merged_categories, unique_unmerged_categories, 
+  labels = c("Merged", "Unmerged"), 
+  ncol = 2, nrow = 1, 
+  legend = "right", common.legend = TRUE
+)
+
+unique_counts_categories
+
+#ggsave("./06-publication/supplemental_figures/NN_oral_reads_duplication_percentage_categories.pdf", plot = unique_counts_categories, device = "pdf", scale = 1, width = 20, height = 5, units = c("in"), dpi = 300)
+```
+
+
+#10M into nf-core/eager
+##Metadata
+```{r}
+metadata_10M_eager <- fread("./05-results/normalize_eager/dsvss_npre_w_rl_subsampling_metadata.tsv") %>%
+  filter(!str_detect(Sequencing_ID, "bp"))
+```
+
+##Classified reads
+```{r}
+#Merged reads
+#duplication files for each library - files list (1) counts, (2) sequence, (3) length of sequence
+#duplication_files_merged_classified <- list.files(path = "./04-analysis/normalize_eager/duplication/classified_reads/merged_classified_duplication", pattern = "_merged_counts_with_lengths.txt", full.names = T)
+
+#unique_counts_merged_classified <- unique_counts_table_merged(duplication_files_merged_classified, metadata_10M_eager) 
+
+#fwrite(unique_counts_merged_classified, "./05-results/normalize_eager/norm_eager_classified_merged_duplicated_reads.tsv", sep = "\t")
+
+#Unmerged reads
+#duplication_files_unmerged_classified <- list.files(path = "./04-analysis/normalize_eager/duplication/classified_reads/unmerged_classified_duplication", pattern = "_unmerged_counts_with_lengths.txt", full.names = T)
+
+#unique_counts_unmerged_classified <- unique_counts_table_unmerged(duplication_files_unmerged_classified, metadata_10M_eager) 
+
+#fwrite(unique_counts_unmerged_classified, "./05-results/normalize_eager/norm_eager_classified_unmerged_duplicated_reads.tsv", sep = "\t")
+```
+The above code generates the tables loaded in below (unique_counts_merged and unique_counts_unmerged)
+
+Read in the tables
+```{r}
+unique_counts_merged <- fread("./05-results/normalize_eager/dsvss_norm_eager_classified_merged_duplicated_reads.tsv")
+
+unique_counts_unmerged <- fread("./05-results/normalize_eager/dsvss_norm_eager_classified_unmerged_duplicated_reads.tsv")
+
+unique_counts_merged2 <- unique_counts_merged %>%
+  dplyr::select(-read_type) %>%
+  rename(unique_reads_merged = unique_reads)
+
+unique_counts_unmerged2 <- unique_counts_unmerged %>%
+  dplyr::select(-read_type) %>%
+  rename(unique_reads_unmerged = unique_reads)
+
+unique_counts_combined <- unique_counts_merged2 %>%
+  full_join(., unique_counts_unmerged2, c("number_of_duplications", "Sequencing_ID", "Strandedness", "Library_ID")) %>%
+  mutate(across(everything(), ~ replace_na(.x, 0)))
+
+
+```
+
+
+Plot
+Create a stacked proportion var chart that shows what proportion of all reads falls into duplication bins (unique, duplicated 2x, 3-5x, 6-10x, >10x)
+```{r}
+unique_categories <- unique_counts_combined %>%
+  mutate(duplication_category = case_when(
+          number_of_duplications == 1 ~ "unique",
+          number_of_duplications == 2 ~ "2x",
+          number_of_duplications >= 3 & number_of_duplications <= 5  ~ "3-5x",
+          number_of_duplications >= 6 & number_of_duplications <= 10 ~ "6-10x",
+          number_of_duplications > 10 ~ ">10x")
+         ) %>%
+  #mutate(duplication_category = factor(duplication_category, levels = c("unique", "2x", "3-5x", "6-10x", ">10x"))) %>%
+  mutate(duplication_category = factor(duplication_category, levels = c(">10x", "6-10x", "3-5x", "2x", "unique"))) %>%
+  mutate(total_reads_merged = number_of_duplications*unique_reads_merged) %>%
+  mutate(total_reads_unmerged = number_of_duplications*unique_reads_unmerged)
+
+color_categories <- c("unique" = "grey",
+                      "2x" = "#88CCEE",
+                      "3-5x" = "#44AA99",
+                      "6-10x" = "#DDCC77",
+                      ">10x" = "#CC6677")
+
+unique_merged_categories <- unique_categories %>%
+  mutate(Individual_ID = Library_ID) %>%
+  separate(Individual_ID, into = "Individual_ID", sep = "\\.", extra = "drop") %>%
+  ggplot(aes(x = Individual_ID, y = total_reads_merged, fill = duplication_category)) +
+    geom_bar(position = "fill", stat = "identity") +
+    labs(y = "Reads Classified by Kraken2 (%)") +
+    facet_wrap(~Strandedness) +
+    theme_minimal() +
+    scale_fill_manual(name = "Duplication Category", values = color_categories) +
+  theme(legend.position = "right",
+          axis.text.x = element_text(angle = 90, hjust = 0, size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14))
+
+
+unique_merged_categories
+
+unique_unmerged_categories <- unique_categories %>%
+  mutate(Individual_ID = Library_ID) %>%
+  separate(Individual_ID, into = "Individual_ID", sep = "\\.", extra = "drop") %>%
+  ggplot(aes(x = Individual_ID, y = total_reads_unmerged, fill = duplication_category)) +
+    geom_bar(position = "fill", stat = "identity") +
+    labs(y = "Reads Classified by Kraken2 (%)") +
+    facet_wrap(~Strandedness) +
+    theme_minimal() +
+    scale_fill_manual(name = "Duplication Category", values = color_categories) +
+   theme(legend.position = "right",
+          axis.text.x = element_text(angle = 90, hjust = 0, size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14))
+
+unique_unmerged_categories
+
+unique_counts_categories <- ggarrange(
+  unique_merged_categories, unique_unmerged_categories, 
+  labels = c("Merged", "Unmerged"), 
+  ncol = 2, nrow = 1, 
+  legend = "right", common.legend = TRUE
+)
+
+unique_counts_categories
+
+#ggsave("./06-publication/supplemental_figures/NPre_classified_reads_duplication_percentage_categories.pdf", plot = unique_counts_categories, device = "pdf", scale = 1, width = 20, height = 5, units = c("in"), dpi = 300)
+```
+
+
+##Oral reads
+```{r}
+#Merged reads
+#duplication files for each library - files list (1) counts, (2) sequence, (3) length of sequence
+#duplication_files_merged_oral <- list.files(path = "./04-analysis/normalize_eager/duplication/oral_reads/merged_oral_duplication", pattern = "_merged_counts_with_lengths.txt", full.names = T)
+
+#unique_counts_merged_oral <- unique_counts_table_merged(duplication_files_merged_oral, metadata_10M_eager) 
+
+#fwrite(unique_counts_merged_oral, "./05-results/normalize_eager/norm_eager_oral_merged_duplicated_reads.tsv", sep = "\t")
+
+#Unmerged reads
+#duplication_files_unmerged_oral <- list.files(path = "./04-analysis/normalize_eager/duplication/oral_reads/unmerged_oral_duplication", pattern = "_unmerged_counts_with_lengths.txt", full.names = T)
+
+#unique_counts_unmerged_oral <- unique_counts_table_unmerged(duplication_files_unmerged_oral, metadata_10M_eager) 
+
+#fwrite(unique_counts_unmerged_oral, "./05-results/normalize_eager/norm_eager_oral_unmerged_duplicated_reads.tsv", sep = "\t")
+```
+The above code generates the tables loaded in below (unique_counts_merged and unique_counts_unmerged)
+
+Read in the tables
+```{r}
+unique_counts_merged <- fread("./05-results/normalize_eager/dsvss_norm_eager_oral_merged_duplicated_reads.tsv")
+
+unique_counts_unmerged <- fread("./05-results/normalize_eager/dsvss_norm_eager_oral_unmerged_duplicated_reads.tsv")
+
+unique_counts_merged2 <- unique_counts_merged %>%
+  dplyr::select(-read_type) %>%
+  rename(unique_reads_merged = unique_reads)
+
+unique_counts_unmerged2 <- unique_counts_unmerged %>%
+  dplyr::select(-read_type) %>%
+  rename(unique_reads_unmerged = unique_reads)
+
+unique_counts_combined <- unique_counts_merged2 %>%
+  full_join(., unique_counts_unmerged2, c("number_of_duplications", "Sequencing_ID", "Strandedness", "Library_ID")) %>%
+  mutate(across(everything(), ~ replace_na(.x, 0)))
+
+
+```
+
+
+Plot
+Create a stacked proportion var chart that shows what proportion of all reads falls into duplication bins (unique, duplicated 2x, 3-5x, 6-10x, >10x)
+```{r}
+unique_categories <- unique_counts_combined %>%
+  mutate(duplication_category = case_when(
+          number_of_duplications == 1 ~ "unique",
+          number_of_duplications == 2 ~ "2x",
+          number_of_duplications >= 3 & number_of_duplications <= 5  ~ "3-5x",
+          number_of_duplications >= 6 & number_of_duplications <= 10 ~ "6-10x",
+          number_of_duplications > 10 ~ ">10x")
+         ) %>%
+  #mutate(duplication_category = factor(duplication_category, levels = c("unique", "2x", "3-5x", "6-10x", ">10x"))) %>%
+  mutate(duplication_category = factor(duplication_category, levels = c(">10x", "6-10x", "3-5x", "2x", "unique"))) %>%
+  mutate(total_reads_merged = number_of_duplications*unique_reads_merged) %>%
+  mutate(total_reads_unmerged = number_of_duplications*unique_reads_unmerged)
+
+color_categories <- c("unique" = "grey",
+                      "2x" = "#88CCEE",
+                      "3-5x" = "#44AA99",
+                      "6-10x" = "#DDCC77",
+                      ">10x" = "#CC6677")
+
+unique_merged_categories <- unique_categories %>%
+  mutate(Individual_ID = Library_ID) %>%
+  separate(Individual_ID, into = "Individual_ID", sep = "\\.", extra = "drop") %>%
+  ggplot(aes(x = Individual_ID, y = total_reads_merged, fill = duplication_category)) +
+    geom_bar(position = "fill", stat = "identity") +
+    labs(y = "Reads Classified as Oral (%)") +
+    facet_wrap(~Strandedness) +
+    theme_minimal() +
+    scale_fill_manual(name = "Duplication Category", values = color_categories) +
+  theme(legend.position = "right",
+          axis.text.x = element_text(angle = 90, hjust = 0, size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14))
+
+
+unique_merged_categories
+
+unique_unmerged_categories <- unique_categories %>%
+  mutate(Individual_ID = Library_ID) %>%
+  separate(Individual_ID, into = "Individual_ID", sep = "\\.", extra = "drop") %>%
+  ggplot(aes(x = Individual_ID, y = total_reads_unmerged, fill = duplication_category)) +
+    geom_bar(position = "fill", stat = "identity") +
+    labs(y = "Reads Classified as Oral (%)") +
+    facet_wrap(~Strandedness) +
+    theme_minimal() +
+    scale_fill_manual(name = "Duplication Category", values = color_categories) +
+   theme(legend.position = "right",
+          axis.text.x = element_text(angle = 90, hjust = 0, size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14))
+
+unique_unmerged_categories
+
+unique_counts_categories <- ggarrange(
+  unique_merged_categories, unique_unmerged_categories, 
+  labels = c("Merged", "Unmerged"), 
+  ncol = 2, nrow = 1, 
+  legend = "right", common.legend = TRUE
+)
+
+unique_counts_categories
+
+#ggsave("./06-publication/supplemental_figures/NPre_oral_reads_duplication_percentage_categories.pdf", plot = unique_counts_categories, device = "pdf", scale = 1, width = 20, height = 5, units = c("in"), dpi = 300)
+```
+
+
+#5M into kraken2
+##Metadata
+```{r}
+metadata_5M_kraken <- fread("./05-results/normalize_kraken/dsvss_npost_w_rl_subsampling_metadata.tsv") %>%
+  filter(!str_detect(Sequencing_ID, "bp"))
+```
+
+##Classified reads
+```{r}
+#Merged reads
+#duplication files for each library - files list (1) counts, (2) sequence, (3) length of sequence
+#duplication_files_merged_classified <- list.files(path = "./04-analysis/normalize_kraken/duplication/classified_reads/merged_classified_duplication", pattern = "_5M_merged_counts_with_lengths.txt", full.names = T)
+
+#unique_counts_merged_classified <- unique_counts_table_merged(duplication_files_merged_classified, metadata_5M_kraken) 
+
+#fwrite(unique_counts_merged_classified, "./05-results/normalize_kraken/norm_kraken_classified_merged_duplicated_reads.tsv", sep = "\t")
+
+#Unmerged reads
+#duplication_files_unmerged_classified <- list.files(path = "./04-analysis/normalize_kraken/duplication/classified_reads/unmerged_classified_duplication", pattern = "_5M_unmerged_counts_with_lengths.txt", full.names = T)
+
+#unique_counts_unmerged_classified <- unique_counts_table_unmerged(duplication_files_unmerged_classified, metadata_5M_kraken) 
+
+#fwrite(unique_counts_unmerged_classified, "./05-results/normalize_kraken/norm_kraken_classified_unmerged_duplicated_reads.tsv", sep = "\t")
+```
+The above code generates the tables loaded in below (unique_counts_merged and unique_counts_unmerged)
+
+Read in the tables
+```{r}
+unique_counts_merged <- fread("./05-results/normalize_kraken/dsvss_norm_kraken_classified_merged_duplicated_reads.tsv")
+
+unique_counts_unmerged <- fread("./05-results/normalize_kraken/dsvss_norm_kraken_classified_unmerged_duplicated_reads.tsv")
+
+unique_counts_merged2 <- unique_counts_merged %>%
+  dplyr::select(-read_type) %>%
+  rename(unique_reads_merged = unique_reads)
+
+unique_counts_unmerged2 <- unique_counts_unmerged %>%
+  dplyr::select(-read_type) %>%
+  rename(unique_reads_unmerged = unique_reads)
+
+unique_counts_combined <- unique_counts_merged2 %>%
+  full_join(., unique_counts_unmerged2, c("number_of_duplications", "Sequencing_ID", "Strandedness", "Library_ID")) %>%
+  mutate(across(everything(), ~ replace_na(.x, 0)))
+
+
+```
+
+
+Plot
+Create a stacked proportion var chart that shows what proportion of all reads falls into duplication bins (unique, duplicated 2x, 3-5x, 6-10x, >10x)
+```{r}
+unique_categories <- unique_counts_combined %>%
+  mutate(duplication_category = case_when(
+          number_of_duplications == 1 ~ "unique",
+          number_of_duplications == 2 ~ "2x",
+          number_of_duplications >= 3 & number_of_duplications <= 5  ~ "3-5x",
+          number_of_duplications >= 6 & number_of_duplications <= 10 ~ "6-10x",
+          number_of_duplications > 10 ~ ">10x")
+         ) %>%
+  #mutate(duplication_category = factor(duplication_category, levels = c("unique", "2x", "3-5x", "6-10x", ">10x"))) %>%
+  mutate(duplication_category = factor(duplication_category, levels = c(">10x", "6-10x", "3-5x", "2x", "unique"))) %>%
+  mutate(total_reads_merged = number_of_duplications*unique_reads_merged) %>%
+  mutate(total_reads_unmerged = number_of_duplications*unique_reads_unmerged)
+
+color_categories <- c("unique" = "grey",
+                      "2x" = "#88CCEE",
+                      "3-5x" = "#44AA99",
+                      "6-10x" = "#DDCC77",
+                      ">10x" = "#CC6677")
+
+unique_merged_categories <- unique_categories %>%
+  mutate(Individual_ID = Library_ID) %>%
+  separate(Individual_ID, into = "Individual_ID", sep = "\\.", extra = "drop") %>%
+  ggplot(aes(x = Individual_ID, y = total_reads_merged, fill = duplication_category)) +
+    geom_bar(position = "fill", stat = "identity") +
+    labs(y = "Reads Classified by Kraken2 (%)") +
+    facet_wrap(~Strandedness) +
+    theme_minimal() +
+    scale_fill_manual(name = "Duplication Category", values = color_categories) +
+  theme(legend.position = "right",
+          axis.text.x = element_text(angle = 90, hjust = 0, size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14))
+
+
+unique_merged_categories
+
+unique_unmerged_categories <- unique_categories %>%
+  mutate(Individual_ID = Library_ID) %>%
+  separate(Individual_ID, into = "Individual_ID", sep = "\\.", extra = "drop") %>%
+  ggplot(aes(x = Individual_ID, y = total_reads_unmerged, fill = duplication_category)) +
+    geom_bar(position = "fill", stat = "identity") +
+    labs(y = "Reads Classified by Kraken2 (%)") +
+    facet_wrap(~Strandedness) +
+    theme_minimal() +
+    scale_fill_manual(name = "Duplication Category", values = color_categories) +
+   theme(legend.position = "right",
+          axis.text.x = element_text(angle = 90, hjust = 0, size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14))
+
+unique_unmerged_categories
+
+unique_counts_categories <- ggarrange(
+  unique_merged_categories, unique_unmerged_categories, 
+  labels = c("Merged", "Unmerged"), 
+  ncol = 2, nrow = 1, 
+  legend = "right", common.legend = TRUE
+)
+
+unique_counts_categories
+
+#ggsave("./06-publication/supplemental_figures/NPost_classified_reads_duplication_percentage_categories.pdf", plot = unique_counts_categories, device = "pdf", scale = 1, width = 16, height = 5, units = c("in"), dpi = 300)
+```
+
+Stats
+```{r}
+#Number classified reads (not just to the species level but ALL reads classified)
+total_class <- unique_categories %>%
+  select(Sequencing_ID, Strandedness, duplication_category, total_reads_unmerged, total_reads_merged) %>%
+  mutate(total_reads = total_reads_unmerged + total_reads_merged) %>%
+  group_by(Sequencing_ID) %>%
+  summarise(
+    total_classified = sum(total_reads, na.rm = TRUE))
+  
+#Percentage of unique reads
+percentage_unique_class <- unique_categories %>%
+  select(Sequencing_ID, Strandedness, duplication_category, total_reads_unmerged, total_reads_merged) %>%
+  filter(duplication_category == "unique") %>%
+  mutate(total_reads = total_reads_unmerged + total_reads_merged) %>%
+  full_join(., total_class) %>%
+  mutate(percent_unique = (total_reads/total_classified)*100)
+
+average_unique_counts <- percentage_unique_class %>%
+  select(Strandedness, total_reads) %>%
+  group_by(Strandedness) %>%
+  summarise(av = mean(total_reads, na.rm = TRUE), 
+            sd = sd(total_reads, na.rm = TRUE),
+            .groups = "drop")
+
+average_unique_percentage <- percentage_unique_class %>%
+  select(Strandedness, percent_unique) %>%
+  group_by(Strandedness) %>%
+  summarise(av = mean(percent_unique, na.rm = TRUE), 
+            sd = sd(percent_unique, na.rm = TRUE),
+            .groups = "drop")
+
+#stats
+wilcox_results <- percentage_unique_class %>%
+  wilcox_test(total_reads ~ Strandedness, paired = TRUE) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")
+
+effect_size_labels <- percentage_unique_class %>%
+  wilcox_effsize(formula = total_reads ~ Strandedness, paired = TRUE) %>%
+  mutate(effectsize_cat = case_when(
+    magnitude == "small" ~ "†",     
+    magnitude == "moderate" ~ "††",
+    magnitude == "large" ~ "†††"))
+```
+
+
+
+
+##Oral reads
+```{r}
+#Merged reads
+#duplication files for each library - files list (1) counts, (2) sequence, (3) length of sequence
+#duplication_files_merged_oral <- list.files(path = "./04-analysis/normalize_kraken/duplication/oral_reads/merged_oral_duplication", pattern = "_merged_counts_with_lengths.txt", full.names = T)
+
+#unique_counts_merged_oral <- unique_counts_table_merged(duplication_files_merged_oral, metadata_5M_kraken) 
+
+#fwrite(unique_counts_merged_oral, "./05-results/normalize_kraken/norm_kraken_oral_merged_duplicated_reads.tsv", sep = "\t")
+
+#Unmerged reads
+#duplication_files_unmerged_oral <- list.files(path = "./04-analysis/normalize_kraken/duplication/oral_reads/unmerged_oral_duplication", pattern = "unmerged_counts_with_lengths.txt", full.names = T)
+
+#unique_counts_unmerged_oral <- unique_counts_table_unmerged(duplication_files_unmerged_oral, metadata_5M_kraken) 
+
+#fwrite(unique_counts_unmerged_oral, "./05-results/normalize_kraken/norm_kraken_oral_unmerged_duplicated_reads.tsv", sep = "\t")
+```
+The above code generates the tables loaded in below (unique_counts_merged and unique_counts_unmerged)
+
+Read in the tables
+```{r}
+unique_counts_merged <- fread("./05-results/normalize_kraken/dsvss_norm_kraken_oral_merged_duplicated_reads.tsv")
+
+unique_counts_unmerged <- fread("./05-results/normalize_kraken/dsvss_norm_kraken_oral_unmerged_duplicated_reads.tsv")
+
+unique_counts_merged2 <- unique_counts_merged %>%
+  dplyr::select(-read_type) %>%
+  rename(unique_reads_merged = unique_reads)
+
+unique_counts_unmerged2 <- unique_counts_unmerged %>%
+  dplyr::select(-read_type) %>%
+  rename(unique_reads_unmerged = unique_reads)
+
+unique_counts_combined <- unique_counts_merged2 %>%
+  full_join(., unique_counts_unmerged2, c("number_of_duplications", "Sequencing_ID", "Strandedness", "Library_ID")) %>%
+  mutate(across(everything(), ~ replace_na(.x, 0)))
+
+
+```
+
+
+Plot
+Create a stacked proportion var chart that shows what proportion of all reads falls into duplication bins (unique, duplicated 2x, 3-5x, 6-10x, >10x)
+```{r}
+unique_categories <- unique_counts_combined %>%
+  mutate(duplication_category = case_when(
+          number_of_duplications == 1 ~ "unique",
+          number_of_duplications == 2 ~ "2x",
+          number_of_duplications >= 3 & number_of_duplications <= 5  ~ "3-5x",
+          number_of_duplications >= 6 & number_of_duplications <= 10 ~ "6-10x",
+          number_of_duplications > 10 ~ ">10x")
+         ) %>%
+  #mutate(duplication_category = factor(duplication_category, levels = c("unique", "2x", "3-5x", "6-10x", ">10x"))) %>%
+  mutate(duplication_category = factor(duplication_category, levels = c(">10x", "6-10x", "3-5x", "2x", "unique"))) %>%
+  mutate(total_reads_merged = number_of_duplications*unique_reads_merged) %>%
+  mutate(total_reads_unmerged = number_of_duplications*unique_reads_unmerged)
+
+color_categories <- c("unique" = "grey",
+                      "2x" = "#88CCEE",
+                      "3-5x" = "#44AA99",
+                      "6-10x" = "#DDCC77",
+                      ">10x" = "#CC6677")
+
+unique_merged_categories <- unique_categories %>%
+  mutate(Individual_ID = Library_ID) %>%
+  separate(Individual_ID, into = "Individual_ID", sep = "\\.", extra = "drop") %>%
+  ggplot(aes(x = Individual_ID, y = total_reads_merged, fill = duplication_category)) +
+    geom_bar(position = "fill", stat = "identity") +
+    labs(y = "Reads Classified as Oral (%)") +
+    facet_wrap(~Strandedness) +
+    theme_minimal() +
+    scale_fill_manual(name = "Duplication Category", values = color_categories) +
+  theme(legend.position = "right",
+          axis.text.x = element_text(angle = 90, hjust = 0, size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14))
+
+
+unique_merged_categories
+
+unique_unmerged_categories <- unique_categories %>%
+  mutate(Individual_ID = Library_ID) %>%
+  separate(Individual_ID, into = "Individual_ID", sep = "\\.", extra = "drop") %>%
+  ggplot(aes(x = Individual_ID, y = total_reads_unmerged, fill = duplication_category)) +
+    geom_bar(position = "fill", stat = "identity") +
+    labs(y = "Reads Classified as Oral (%)") +
+    facet_wrap(~Strandedness) +
+    theme_minimal() +
+    scale_fill_manual(name = "Duplication Category", values = color_categories) +
+   theme(legend.position = "right",
+          axis.text.x = element_text(angle = 90, hjust = 0, size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14))
+
+unique_unmerged_categories
+
+unique_counts_categories <- ggarrange(
+  unique_merged_categories, unique_unmerged_categories, 
+  labels = c("Merged", "Unmerged"), 
+  ncol = 2, nrow = 1, 
+  legend = "right", common.legend = TRUE
+)
+
+unique_counts_categories
+
+#ggsave("./06-publication/supplemental_figures/NPost_oral_reads_duplication_percentage_categories.pdf", plot = unique_counts_categories, device = "pdf", scale = 1, width = 16, height = 5, units = c("in"), dpi = 300)
+```
+
+
+Stats
+```{r}
+#Number classified reads (not just to the species level but ALL reads classified)
+total_oral <- unique_categories %>%
+  select(Sequencing_ID, Strandedness, duplication_category, total_reads_unmerged, total_reads_merged) %>%
+  mutate(total_reads = total_reads_unmerged + total_reads_merged) %>%
+  group_by(Sequencing_ID) %>%
+  summarize(total_oral = sum(total_reads, na.rm = TRUE))
+  
+#Percentage of unique reads
+percentage_unique_class <- unique_categories %>%
+  select(Sequencing_ID, Strandedness, duplication_category, total_reads_unmerged, total_reads_merged) %>%
+  filter(duplication_category == "unique") %>%
+  mutate(total_reads = total_reads_unmerged + total_reads_merged) %>%
+  full_join(., total_oral) %>%
+  mutate(percent_unique = (total_reads/total_oral)*100)
+
+average_unique_counts <- percentage_unique_class %>%
+  select(Strandedness, total_reads) %>%
+  group_by(Strandedness) %>%
+  summarise(av = mean(total_reads, na.rm = TRUE), 
+            sd = sd(total_reads, na.rm = TRUE),
+            .groups = "drop")
+
+average_unique_percentage <- percentage_unique_class %>%
+  select(Strandedness, percent_unique) %>%
+  group_by(Strandedness) %>%
+  summarise(av = mean(percent_unique, na.rm = TRUE), 
+            sd = sd(percent_unique, na.rm = TRUE),
+            .groups = "drop")
+
+
+#Number classified reads (not just to the species level but ALL reads classified)
+total_oral <- unique_categories %>%
+  select(Sequencing_ID, Strandedness, duplication_category, total_reads_unmerged, total_reads_merged) %>%
+  mutate(total_oral = total_reads_unmerged + total_reads_merged) %>%
+  group_by(Sequencing_ID) %>%
+  summarise(
+    total_classified = sum(total_oral, na.rm = TRUE))
+
+  
+#stats
+wilcox_results <- percentage_unique_class %>%
+  wilcox_test(total_reads ~ Strandedness, paired = TRUE) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")
+
+effect_size_labels <- percentage_unique_class %>%
+  wilcox_effsize(formula = total_reads ~ Strandedness, paired = TRUE) %>%
+  mutate(effectsize_cat = case_when(
+    magnitude == "small" ~ "†",     
+    magnitude == "moderate" ~ "††",
+    magnitude == "large" ~ "†††"))
+
+```
+
+
+```{r}
+#look just at dsLibs to see when the majority of duplicated reads are only single duplications (2x category)
+
+#Percentage of unique reads
+duplicated_2x <- unique_categories %>%
+  select(Sequencing_ID, Strandedness, duplication_category, total_reads_unmerged, total_reads_merged, unique_reads_unmerged, unique_reads_merged) %>%
+  filter(duplication_category == "2x") %>%
+  mutate(total_2x = total_reads_unmerged + total_reads_merged) %>%
+  mutate(unique_2x = unique_reads_merged + unique_reads_unmerged) %>%
+  select(-total_reads_unmerged, -total_reads_merged, -unique_reads_unmerged, -unique_reads_merged) %>%
+  full_join(., percentage_unique_class %>%
+              select(Sequencing_ID, total_reads) %>%
+              rename(total_unique = total_reads)) %>%
+  full_join(., total_oral) %>%
+  mutate(duplicated_read_count = total_classified - total_unique) %>%
+  mutate(percent_duplicated = (duplicated_read_count/total_classified)*100) 
+
+#median number of total duplicated reads
+mean_total_dup <- duplicated_2x %>%
+  group_by(Strandedness) %>%
+  summarize(duplicated_read_count_mean = mean(duplicated_read_count),
+            sd = sd(duplicated_read_count))
+
+#median number of total reads duplicated once
+median_2x_total <- duplicated_2x %>%
+  group_by(Strandedness) %>%
+  summarize(mean_2x = mean(total_2x),
+            sd = sd(total_2x))
+
+#median number of total reads duplicated once
+median_2x_unique <- duplicated_2x %>%
+  group_by(Strandedness) %>%
+  summarize(mean_2x = mean(unique_2x),
+            sd = sd(unique_2x))
+
+median_2x <- duplicated_2x %>%
+  mutate(percent_of_duplicated_reads_w_single_duplication = (total_2x/duplicated_read_count)*100) %>%
+  group_by(Strandedness) %>%
+  summarize(mean = mean(percent_of_duplicated_reads_w_single_duplication),
+            sd = sd(percent_of_duplicated_reads_w_single_duplication)) 
+  
+
+```
+
+
+
+
