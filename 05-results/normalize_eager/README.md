@@ -6,7 +6,7 @@ This folder contains all results generated in the NPre normalization tract.
 - `dsvss_npre_metadata.tsv`: Sample metadata and read counts, GC, and length both before and after processing
 - `dsvss_npre_w_rl_subsampling_metadata.tsv`: Read length stratification sample metadata and read counts, GC, and length both before and after processing
 
-### Kraken2:
+### Kraken2
 - `dsvss_npre_eager_read_counts.tsv`: Read counts throughout processing steps
 - `dsvss_npre_kraken2_gtdb207_combined_table.tsv`: NPre Kraken2 output table before formatting
 - `dsvss_npre_kraken2_output_file_names.tsv`: List of NPre Kraken2 output files
@@ -17,7 +17,7 @@ This folder contains all results generated in the NPre normalization tract.
 - `dsvss_npre_w_read_length_kraken2_gtdb207_total_species_decontam.tsv`: Kraken2 total species for all samples (including read length stratification) after running decontam
 - `dsvss_npre_no_rl_kraken2_gtdb207_oral_species_decontam_filtered.tsv`: Kraken2 oral species table after running decontam and filtering for low abundance species
 
-### Read length and GC distributions during processing steps:
+### Read length and GC distributions during processing steps
 - `dsvss_npre_read_length_adapter_removal.tsv`: Read length distributions of reads post adapter removal
 - `dsvss_npre_read_length_remove30bp.tsv`: Read length distributions of reads after removing reads <30 bp
 - `dsvss_npre_read_length_artifact_removal.tsv`: Read length distributions of reads after removing laboratory and sequencing artifacts
