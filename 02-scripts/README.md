@@ -11,7 +11,11 @@ This folder contains all the workflows and scripts that are necessary to conduct
 - `dsvss_figure6.Rmd`: R script used to generate all figure panels in main text figure 6
 - `dsvss_duplication_plots.Rmd`: R script to generate all duplication plots for total classified reads and oral reads (SI figures XX6, XX7) (NN, NPre, & NPost)
 - `dsvss_decontam_sourcetracker_prep.Rmd`: Run decontam on Kraken2 outputs and prepare tables for Sourcetracker (NN, NPre, & NPost)
-- `dsvss_norm_kraken_species_specific_rl_damage.Rmd`: R script to generate NPost species-specific read length distributions, GC distributions, and damage plots
+- `dsvss_npost_species_specific_rl_damage.Rmd`: R script to generate NPost species-specific read length distributions, GC distributions, and damage plots
+- `dsvss_NN_cuperdec_alpha_beta.Rmd`: R script to generate cuperdec curves and conduct alpha and beta diversity analyses on the NN dataset
+- `dsvss_npre_cuperdec_alpha_beta.Rmd`: R script to generate cuperdec curves and conduct alpha and beta diversity analyses on the NPre dataset
+- `dsvss_npre_eager_gc_read_length_plots.Rmd`: R script to generate read length and GC distribution histograms for the NPre dataset throughout key *nf-core/eager* processing steps (adapter removal, read merging, low quality end trimming, removing reads less than 30bp, removing sequencing and lab artifacts (including reads mapped to the human genome and lab standards left in the sample), and additional adapter removal with Cutadapt)
+- `dsvss_npost_cuperdec_alpha_beta.Rmd`: R script to generate cuperdec curves and conduct alpha and beta diversity analyses on the NPost dataset
 
 ### The files starting with the prefix `ENVS` are conda environments used in combination with Snakemake.
 - `ENVS_cutadapt.yaml`: Cutadapt conda environment
