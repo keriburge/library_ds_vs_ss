@@ -6,7 +6,7 @@
 DNA library construction methods can strongly affect the recovery of ancient DNA, thus influencing downstream analyses. While single-stranded library preparation (ssLib) has been shown to outperform double-stranded (dsLib) for highly degraded vertebrate host DNA, especially for samples older than 40,000 years, few systematic studies have examined how  library protocols shape ancient microbial community reconstruction. Here, we compare the sequencing output of paired ssLib and dsLib dental calculus libraries generated from twelve Neanderthals and two Chalcolithic humans sequenced with identical Illumina chemistry. We compared read length and GC%, read duplication, and taxonomic profiles across multiple normalization strategies to assess protocol-specific biases.
 
 ### Authors
-Keri Burge, Irina M. Velsko, Domingo Salazar-Garcia, & Christina Warinner
+Keri Burge, Irina M. Velsko, Domingo Salazar-Garcia, María Haber Uriarte, Joaquín Lomba Maurandi, & Christina Warinner
 
 ### Overview
 Folders:
