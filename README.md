@@ -13,7 +13,7 @@ https://dx.doi.org/10.17504/protocols.io.bqcsmswe
 https://dx.doi.org/10.17504/protocols.io.4r3l287x3l1y/v3
 Version created by James A Fellows Yates
   
-ssLibs protocols:
+ssLib protocols:
 
 - Library construction: Sarah Nagel, Anna Schmidt, Ayinuer Aximu Petri, Anya Patova, Merlin Szymanski, Elena Essel, Matthias Meyer 2026. Bravo workstation: automated single-stranded DNA library preparation (ssDNA2.0). protocols.io
 https://dx.doi.org/10.17504/protocols.io.kqdg32bdpv25/v2
