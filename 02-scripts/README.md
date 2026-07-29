@@ -3,12 +3,11 @@
 This folder contains all the workflows and scripts that are necessary to conduct the experiments of this project.
 
 ### R scripts
-- `dsvss_figure1.Rmd`: R script used to generate the map panel in main text figure 1
-- `dsvss_figure2.Rmd`: R script used to generate all figure panels in main text figure 2
-- `dsvss_figure3.Rmd`: R script used to generate all figure panels in main text figure 3
-- `dsvss_figure4.Rmd`: R script used to generate all figure panels in main text figure 4
-- `dsvss_figure5.Rmd`: R script used to generate all figure panels in main text figure 5
-- `dsvss_figure6.Rmd`: R script used to generate all figure panels in main text figure 6
+- `dsvss_figure1.Rmd`: R script used to generate the map panel in main text Figure 1 - Experimental design and library metadata
+- `dsvss_figure2.Rmd`: R script used to generate all figure panels in main text Figure 2 - Sequencing depth, dataset complexity, contamination profiles, and read retention, across library preparation protocols
+- `dsvss_figure3.Rmd`: R script used to generate all figure panels in main text Figure 3 - Effect of library type on read processing after subsampling to 10 million reads (NPre)
+- `dsvss_figure4.Rmd`: R script used to generate all figure panels in main text Figure 4 - Oral-species specific read characteristics and taxonomic diversity of samples profiled with Kraken2 after subsampling to 5M reads
+- `dsvss_figure5.Rmd`: R script used to generate all figure panels in main text Figure 5 - Oral species–specific drivers of PCA structure and library-dependent recovery of taxa
 - `dsvss_duplication_plots.Rmd`: R script to generate all duplication plots for total classified reads and oral reads (SI figures XX6, XX7) (NN, NPre, & NPost)
 - `dsvss_decontam_sourcetracker_prep.Rmd`: Run decontam on Kraken2 outputs and prepare tables for Sourcetracker (NN, NPre, & NPost)
 - `dsvss_npost_species_specific_rl_damage.Rmd`: R script to generate NPost species-specific read length distributions, GC distributions, and damage plots
