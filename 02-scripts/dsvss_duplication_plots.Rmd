@@ -36,7 +36,6 @@ unique_counts_table_merged <- function(duplication_files_merged, metadata_file) 
   unique_counts <- lapply(duplication_files_merged, function(fn) {
     fread(fn) %>%
     rename(number_of_duplications = 1, sequence = 2, length = 3) %>%
-    #filter(!number_of_duplications == 1) %>% #filter out reads that aren't duplicates!
     mutate(sequence_counts_tmp = 1) %>%
     group_by(number_of_duplications) %>%  
     summarize(unique_reads = sum(sequence_counts_tmp, na.rm = TRUE)) %>%
@@ -64,7 +63,6 @@ unique_counts_table_unmerged <- function(duplication_files_unmerged, metadata_fi
   unique_counts <- lapply(duplication_files_unmerged, function(fn) {
     fread(fn) %>%
     rename(number_of_duplications = 1, sequence = 2, length = 3) %>%
-    #filter(!number_of_duplications == 1) %>% #filter out reads that aren't duplicates!
     mutate(sequence_counts_tmp = 1) %>%
     group_by(number_of_duplications) %>%  
     summarize(unique_reads = sum(sequence_counts_tmp, na.rm = TRUE)) %>%
@@ -93,21 +91,22 @@ metadata_no_norm <- fread("./05-results/no_normalization/dsvss_no_normalization_
 ```
 
 ##Classified reads
+The following code shows how to generate the duplication tables used from the dsvss_duplication_ex_script.sh script. These files are not included on the GitHub repository due to their large size.
 ```{r}
 #Merged reads
 #duplication files for each library - files list (1) counts, (2) sequence, (3) length of sequence
-duplication_files_merged_classified <- list.files(path = "./05-results/no_normalization/duplication/classified_reads/merged_reads", pattern = "_merged_counts_with_lengths.txt", full.names = T)
+#duplication_files_merged_classified <- list.files(path = "./05-results/no_normalization/duplication/classified_reads/merged_reads", pattern = "_merged_counts_with_lengths.txt", full.names = T)
 
-unique_counts_merged_classified <- unique_counts_table_merged(duplication_files_merged_classified, metadata_no_norm) 
+#unique_counts_merged_classified <- unique_counts_table_merged(duplication_files_merged_classified, metadata_no_norm) 
 
-fwrite(unique_counts_merged_classified, "./05-results/no_normalization/dsvss_no_norm_classified_merged_duplicated_reads.tsv", sep = "\t")
+#fwrite(unique_counts_merged_classified, "./05-results/no_normalization/dsvss_no_norm_classified_merged_duplicated_reads.tsv", sep = "\t")
 
-Unmerged reads
-duplication_files_unmerged_classified <- list.files(path = "./05-results/no_normalization/duplication/classified_reads/unmerged_reads", pattern = "_unmerged_counts_with_lengths.txt", full.names = T)
+#Unmerged reads
+#duplication_files_unmerged_classified <- list.files(path = "./05-results/no_normalization/duplication/classified_reads/unmerged_reads", pattern = "_unmerged_counts_with_lengths.txt", full.names = T)
 
-unique_counts_unmerged_classified <- unique_counts_table_unmerged(duplication_files_unmerged_classified, metadata_no_norm) 
+#unique_counts_unmerged_classified <- unique_counts_table_unmerged(duplication_files_unmerged_classified, metadata_no_norm) 
 
-fwrite(unique_counts_unmerged_classified, "./05-results/no_normalization/dsvss_no_norm_classified_unmerged_duplicated_reads.tsv", sep = "\t")
+#fwrite(unique_counts_unmerged_classified, "./05-results/no_normalization/dsvss_no_norm_classified_unmerged_duplicated_reads.tsv", sep = "\t")
 ```
 The above code generates the tables loaded in below (unique_counts_merged and unique_counts_unmerged)
 

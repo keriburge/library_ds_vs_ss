@@ -1,5 +1,5 @@
 ---
-title: "Figure 1"
+title: "Figure 1 - Experimental design and library metadata"
 author: "Keri Burge"
 date: "`r format(Sys.time(), '%b %d, %Y')`"
 output:
@@ -10,14 +10,13 @@ output:
 ---
 
 ```{r, eval=TRUE, echo=FALSE, message=FALSE}
-#install.packages("maps")
-
+library(maps)
 library(knitr)
 library(dplyr)
 library(ggplot2)
+library(rstatix)
 library(viridis)
 library(data.table)
-library(ggmap)
 library(tidyverse)
 
 ```
@@ -63,10 +62,8 @@ map <- ggplot() +
 
 map
 
-#ggsave("./06-publication/main_figures/Figure_1A_map.pdf", plot = map, device = "pdf", scale = 1, width = 8, height = 5, units = c("in"), dpi = 300)
+#ggsave("./06-publication/main_figures/Figure1A_map_figure.pdf", plot = map, device = "pdf", scale = 1, width = 8, height = 5, units = c("in"), dpi = 300)
 
 ```
-
-
 
 

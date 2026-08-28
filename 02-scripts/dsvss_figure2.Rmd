@@ -1,5 +1,5 @@
 ---
-title: "Figure 2"
+title: "Figure 2 - Sequencing depth, dataset complexity, contamination profiles, and read retention, across library preparation protocols"
 author: "Keri Burge"
 date: "`r format(Sys.time(), '%b %d, %Y')`"
 output:
@@ -10,7 +10,6 @@ output:
 ---
 
 ```{r, eval=TRUE, echo=FALSE, message=FALSE}
-#install.packages("maps")
 
 library(knitr)
 library(dplyr)
@@ -20,7 +19,9 @@ library(viridis)
 library(data.table)
 library(ggpattern) 
 library(janitor)
+library(ggrepel)
 library(tidyverse)
+library(Nonpareil)
 
 ```
 
@@ -85,15 +86,242 @@ reads_histogram <- metadata %>%
 
 reads_histogram
 
-#ggsave("./06-publication/main_figures/Figure_2A_initial_read_count_plot.pdf", plot = reads_histogram, device = "pdf", scale = 1, width = 10, height = 6, units = c("in"), dpi = 300)
+#ggsave("./06-publication/main_figures/Figure2A_initial_read_count_plot.pdf", plot = reads_histogram, device = "pdf", scale = 1, width = 10, height = 6, units = c("in"), dpi = 300)
+```
+
+#B: Nopareil ()
+Plot nonpareil curves for all individual IDs - Supplemental figures 1-2
+```{r}
+#use ./05-results/normalize_eager/npre_nonpareil_npo_file_paths.tsv for NPre data
+#use ./05-results/no_normalization/NN_nonpareil_npo_file_paths.tsv for NN data
+samples <- fread('./05-results/normalize_eager/npre_nonpareil_npo_file_paths.tsv',
+                      sep = '\t', header = TRUE) %>%
+  mutate(File = str_replace(File, "\\../../", "./"))
+  
+
+individual_ids <- c("BAN001", "CDM019", "CDM020", "FUM001", "FUM002", "FUM003",
+                    "GDN001", "GOY005", "GOY006", "GUE001", "PES001", "SPM002", 
+                    "VLD001", "ZAF001")
+
+for (individual_id in individual_ids) {
+  #Define output file name
+  file_name <- file.path("./06-publication/supplemental_figures/", paste0(individual_id, "_nonpareil_curve_NPre.pdf"))
+  
+  #Start PNG device
+ pdf(file = file_name, width = 5, height = 4)
+
+  #Filter and plot
+  sample_subset <- samples %>%
+    filter(Individual_ID == individual_id) %>%
+    dplyr::select(-Name) %>%
+    rename(Name = Strandedness)
+
+  Nonpareil.set(sample_subset$File,
+                col = sample_subset$Col,
+                labels = sample_subset$Name,
+                plot.opts = list(main = "", plot.observed = FALSE))
+
+  title(paste0(individual_id, " - 10M"))
+  
+  #Save file 
+  dev.off()
+}
+```
+
+Create a summary plot showing the predicted sequencing effort to reach 95% coverage 
+```{r}
+samples <- fread(
+  "./05-results/normalize_eager/npre_nonpareil_npo_file_paths.tsv",
+  sep = "\t",
+  header = TRUE
+) %>%
+  mutate(File = str_replace(File, "\\../../", "./"))
+
+individual_ids <- c("BAN001", "CDM019", "CDM020", "FUM001", "FUM002", "FUM003", "GDN001", "GOY005", "GOY006", "GUE001", "PES001", "SPM002", "VLD001", "ZAF001")
+
+samples_subset <- samples %>%
+  filter(Individual_ID %in% individual_ids) %>%
+  mutate(Library = Strandedness,
+         Plot_label = paste(Individual_ID, Library, sep = " - "))
 ```
 
 
+```{r}
+nps <- Nonpareil.set(
+  files  = samples_subset$File,
+  col    = samples_subset$Col,
+  labels = samples_subset$Plot_label,
+  plot   = FALSE,
+  star   = 95)
 
-#B: Loss of reads after processing via nf-core/eager
+np_summary <- as.data.frame(summary(nps)) %>%
+  mutate(Effort95_Gbp = LRstar/1e9) %>%
+  rownames_to_column() %>%
+  separate(rowname, into = c("Individual_ID", "Strandedness"), sep = " - ") %>%
+  mutate(Coverage = C*100)
+
+```
+
+
+```{r}
+#Stats using rstatix package
+wilcox_results <- np_summary %>%
+  wilcox_test(Effort95_Gbp ~ Strandedness, paired = TRUE) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")
+
+effect_size_labels <- np_summary %>%
+  wilcox_effsize(formula = Effort95_Gbp ~ Strandedness, paired = TRUE) %>%
+  mutate(effectsize_cat = case_when(
+    magnitude == "small" ~ "†",     
+    magnitude == "moderate" ~ "††",
+    magnitude == "large" ~ "†††"))
+
+wilcox_results <- wilcox_results %>%
+  left_join(effect_size_labels) %>%
+  mutate(annotation = paste(p.adj.signif, effectsize_cat))
+
+annotations <- wilcox_results %>%
+  summarize(annotation = first(annotation),
+            y_position = 95, .groups = 'drop')
+```
+
+
+```{r}
+#Plot
+nonpareil_95_cov <- np_summary %>%
+  mutate(Strandedness = str_replace(Strandedness, "Double", "dsLib"),
+         Strandedness = str_replace(Strandedness, "Single", "ssLib")) %>%
+  ggplot(., aes(x = Strandedness, y = Effort95_Gbp)) + 
+  geom_boxplot() +
+  scale_y_log10() +
+  geom_jitter(width = 0.06, size = 3, aes(color = Coverage)) +
+  scale_color_viridis(option = "inferno", begin = 0.1) +
+  theme_classic() +
+  scale_shape_manual(values = c(16, 18)) +
+  labs(x = "Library Type",
+       y = "Predicted sequencing effort for 95% coverage (Gbp)",
+       color = "Initial coverage (%)") +
+  expand_limits(y = 100) +
+  guides(alpha = FALSE) +
+  geom_text(data = annotations, aes(x = 1.5, y = y_position, label = annotation), vjust = -0.5, size = 5) +
+  theme(axis.text.x = element_text( size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank()) +
+  geom_line(aes(group = Individual_ID), linetype = "dashed", color = "#555555", linewidth = 0.2) +
+  geom_text_repel(aes(label = Individual_ID), size = 2)
+
+nonpareil_95_cov
+
+#ggsave("./06-publication/main_figures/Figure2B_NPre_nonpareil_95x_seq_effort_summary.pdf", plot = nonpareil_95_cov, device = "pdf", scale = 1, width = 8, height = 5, units = c("in"), dpi = 300)
+```
+
+
+#C: Sourcetracker normalizing 10M into nf-core/eager
+```{r}
+source_colors <- c(
+  "Modern Calculus" = "#bfaed4",  
+  "Plaque"          = "#3f007d",  
+  "Gut"             = "#c05b16",  
+  "Skin"            = "#fdc187",  
+  "Environment"     = "#7fc97f",  
+  "Unknown"         = "#d9d9d9"   
+)
+
+source_patterns <- c(
+  "Unknown"         = "none",
+  "Environment"     = "stripe",
+  "Skin"            = "stripe",
+  "Gut"             = "stripe",
+  "Plaque"          = "none",
+  "Modern Calculus" = "none"
+)
+
+source_angles <- c(
+  "Unknown"         = 0,
+  "Environment"     = 45,
+  "Skin"            = 135,
+  "Gut"             = 0,
+  "Plaque"          = 0,
+  "Modern Calculus" = 0
+)
+
+#Read in metadata 
+metadata <- fread("./05-results/normalize_eager/dsvss_npre_metadata.tsv") %>%
+  filter(!str_detect(Sequencing_ID, "bp")) 
+
+#Prepare SourceTracker Results
+source_results <- fread("./05-results/normalize_eager/dsvss_npre_sourcetracker_sink_predictions.txt") %>%
+  rename(Sequencing_ID = 1) %>%
+  full_join(., metadata)
+
+sources_plot_no_subsampling_individual_facet <- source_results %>%
+  rename(Environment = environment, Gut = gut, "Modern Calculus" = modern_calc, Plaque = plaque, Skin = skin) %>%
+  gather("Sources", "Percent",2:7) %>%
+  mutate(Percent = Percent * 100) %>%
+  mutate(Sources = fct_relevel(Sources, "Unknown", "Environment", "Skin","Gut","Plaque","Modern Calculus")) %>%
+  ggplot(., aes(x = Strandedness, y = Percent, fill = Sources, pattern = Sources)) +
+          geom_bar_pattern(
+            aes(pattern_angle = Sources),
+            linewidth = .02,
+            stat = "identity",
+            color = "black",
+            #pattern_alpha = 0.45,
+            pattern_fill = NA,
+            pattern_density = 0.03,
+            pattern_spacing = 0.07,
+            pattern_size = 0.15,
+            pattern_key_scale_factor = 0.2) +
+          theme_minimal(base_size = 14) +
+          scale_fill_manual(values = source_colors) +
+          scale_pattern_manual(values = source_patterns) +
+          theme(axis.text.x = element_text(angle = 90, hjust = 1),
+                axis.text = element_text(size = 8)) +
+          geom_hline(yintercept=50, linetype="dotted") +
+          geom_hline(yintercept=90, linetype="dotted", color = "gray50") +
+          #scale_y_continuous(breaks=scales::pretty_breaks(n=6)) +
+          ylab("% attributed to source") +
+          xlab("Individual ID and Strandedness") +
+          facet_wrap(~Individual_ID, ncol = 7) +
+          scale_pattern_angle_manual(values = source_angles)
+
+sources_plot_no_subsampling_individual_facet
+
+#ggsave("./06-publication/main_figures/Figure2C_NPre_no_rl_kraken2_sourcetracker_IndividualID_facet.pdf", plot = sources_plot_no_subsampling_individual_facet, device = "pdf", scale = 1, width = 12, height = 6, units = c("in"), dpi = 300)
+```
+
+Run a paired wilcoxon signed-rank test to compare the oral component (plaque, modern calculus) between library types
+```{r}
+oral_sources <- source_results %>%
+  mutate(oral_source = plaque + modern_calc) %>%
+  select(Sequencing_ID, Strandedness, oral_source)
+
+wilcox_results <- oral_sources %>%
+  wilcox_test(oral_source ~ Strandedness, paired = TRUE) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")
+
+effect_size_labels <- oral_sources %>%
+  wilcox_effsize(formula = oral_source ~ Strandedness, paired = TRUE) %>%
+  mutate(effectsize_cat = case_when(
+    magnitude == "small" ~ "†",     
+    magnitude == "moderate" ~ "††",
+    magnitude == "large" ~ "†††"))
+
+wilcox_results <- wilcox_results %>%
+  left_join(effect_size_labels) %>%
+  mutate(annotation = paste(p.adj.signif, effectsize_cat))
+```
+
+
+#D: Loss of reads after processing via nf-core/eager
 ```{r}
 #Library info
-metadata <- fread("./05-results/normalize_eager/dsvss_npre_metadata.tsv") %>%
+metadata <- fread("./05-results/normalize_eager/dsvss_npre_w_rl_subsampling_metadata.tsv") %>%
   filter(!str_detect(Sequencing_ID, "bp")) %>%
   mutate(Sequencing_ID = str_replace(Sequencing_ID, "_10M", ""))
 
@@ -106,8 +334,18 @@ metadata <- metadata %>%
 
 eager <- metadata %>%
   pivot_longer(Adapter_removal_merged:Cutadapt_merged, names_to = "step", values_to = "reads") %>%
-  mutate(step = (factor(step, levels = c("Adapter_removal_merged", "Remove_less_30bp_merged", "Artifact_removal_merged", "Cutadapt_merged"))))
+  mutate(step = (factor(step, levels = c("Adapter_removal_merged", "Remove_less_30bp_merged", "Artifact_removal_merged", "Cutadapt_merged")))) %>%
+  mutate(step = str_replace_all(step, "Adapter_removal_merged", "Reads After Adapter Removal and Merging"),
+         step = str_replace_all(step, "Remove_less_30bp_merged", "Reads After Removing Reads <30bp"),
+         step = str_replace_all(step, "Artifact_removal_merged", "Reads After Removing Sequencing and Lab Artifacts"),
+         step = str_replace_all(step, "Cutadapt_merged", "Reads After Cutadapt")) %>%
+  rename(Library = Strandedness) %>%
+  mutate(Library = str_replace_all(Library, "Single", "ssLib"),
+         Library = str_replace_all(Library, "Double", "dsLib")) %>%
+  mutate(reads = str_replace_all(reads, ",", "")) %>%
+  mutate(reads = as.numeric(reads))
 
+eager$step <- factor(eager$step, levels = c("Reads After Adapter Removal and Merging", "Reads After Removing Reads <30bp", "Reads After Removing Sequencing and Lab Artifacts", "Reads After Cutadapt")) 
 ```
 
 
@@ -144,8 +382,9 @@ annotations <- wilcox_results %>%
   summarize(annotation = first(annotation),
             y_position = 95, .groups = 'drop')
 
+
 kraken2_filtered_oral_species <- fread("./05-results/normalize_eager/dsvss_npre_no_rl_kraken2_gtdb207_oral_species_decontam_filtered.tsv") %>%
-  adorn_totals() %>%
+  adorn_totals("row") %>%
   filter(Species == "Total") %>%
   pivot_longer(!Species, names_to = "Sequencing_ID", values_to = "number_oral_reads") %>%
   mutate(number_oral_reads = as.numeric(number_oral_reads)) %>%
@@ -181,125 +420,11 @@ eager_percent_plots <- eager_percent %>%
           legend.title = element_text(size = 14),
           panel.grid.major = element_blank(),
           panel.grid.minor = element_blank()) +
-  geom_line(aes(group = Individual_ID), linetype = "dashed", color = "#555555", linewidth = 0.2) 
+  geom_line(aes(group = Individual_ID), linetype = "dashed", color = "#555555", linewidth = 0.2) +
+  geom_text_repel(aes(label = Sample), size = 2)
 
 eager_percent_plots
 
-#ggsave("./06-publication/main_figures/Figure2B_percent_reads_retained_after_processing.pdf", plot = eager_percent_plots, device = "pdf", scale = 1, width = 8, height = 5, units = c("in"), dpi = 300)
+#ggsave("./06-publication/main_figures/Figure2D_NPre_percent_reads_retained_after_processing.pdf", plot = eager_percent_plots, device = "pdf", scale = 1, width = 8, height = 5, units = c("in"), dpi = 300)
 ```
-
-
-#C: Nopareil ()
-Plot nonpareil curves for all individual IDs (only GOY005 is used in Fig. 1)
-```{r}
-library(Nonpareil)
-
-samples <- fread('./05-results/normalize_eager/npre_nonpareil_npo_file_paths.tsv',
-                      sep = '\t', header = TRUE) 
-  
-
-individual_ids <- c("BAN001", "CDM019", "CDM020", "FUM001", "FUM002", "FUM003",
-                    "GDN001", "GOY005", "GOY006", "GUE001", "PES001", "SPM002", 
-                    "VLD001", "ZAF001")
-
-for (individual_id in individual_ids) {
-  #Define output file name
-  file_name <- file.path("./06-publication/supplemental_figures/npre_nonpareil_curves", paste0(individual_id, "_nonpareil_curve_npre.pdf"))
-  
-  #Start PNG device
- pdf(file = file_name, width = 5, height = 4)
-
-  #Filter and plot
-  sample_subset <- samples %>%
-    filter(Individual_ID == individual_id) %>%
-    dplyr::select(-Name) %>%
-    rename(Name = Strandedness)
-
-  Nonpareil.set(sample_subset$File,
-                col = sample_subset$Col,
-                labels = sample_subset$Name,
-                plot.opts = list(main = "", plot.observed = FALSE))
-
-  title(paste0(individual_id, " - 10M"))
-  
-  #Save file 
-  dev.off()
-}
-```
-
-
-
-#D: Sourcetracker normalizing 10M into nf-core/eager
-```{r}
-source_colors <- c(
-  "Modern Calculus" = "#bfaed4",  
-  "Plaque"          = "#3f007d",  
-  "Gut"             = "#c05b16",  
-  "Skin"            = "#fdc187",  
-  "Environment"     = "#7fc97f",  
-  "Unknown"         = "#d9d9d9"   
-)
-
-source_patterns <- c(
-  "Unknown"         = "none",
-  "Environment"     = "stripe",
-  "Skin"            = "stripe",
-  "Gut"             = "stripe",
-  "Plaque"          = "none",
-  "Modern Calculus" = "none"
-)
-
-source_angles <- c(
-  "Unknown"         = 0,
-  "Environment"     = 45,
-  "Skin"            = 135,
-  "Gut"             = 0,
-  "Plaque"          = 0,
-  "Modern Calculus" = 0
-)
-
-#Read in metadata 
-metadata <- fread("./05-results/normalize_eager/dsvss_npre_w_rl_subsampling_metadata.tsv") %>%
-  filter(!str_detect(Sequencing_ID, "bp")) 
-
-#Prepare SourceTracker Results
-source_results <- fread("./05-results/normalize_eager/dsvss_npre_sourcetracker_sink_predictions.txt") %>%
-  rename(Sequencing_ID = 1) %>%
-  full_join(., metadata)
-
-sources_plot_no_subsampling_individual_facet <- source_results %>%
-  rename(Environment = environment, Gut = gut, "Modern Calculus" = modern_calc, Plaque = plaque, Skin = skin) %>%
-  gather("Sources", "Percent",2:7) %>%
-  mutate(Percent = Percent * 100) %>%
-  mutate(Sources = fct_relevel(Sources, "Unknown", "Environment", "Skin","Gut","Plaque","Modern Calculus")) %>%
-  ggplot(., aes(x = Strandedness, y = Percent, fill = Sources, pattern = Sources)) +
-          geom_bar_pattern(
-            aes(pattern_angle = Sources),
-            linewidth = .02,
-            stat = "identity",
-            color = "black",
-            #pattern_alpha = 0.45,
-            pattern_fill = NA,
-            pattern_density = 0.03,
-            pattern_spacing = 0.07,
-            pattern_size = 0.15,
-            pattern_key_scale_factor = 0.2) +
-          theme_minimal(base_size = 14) +
-          scale_fill_manual(values = source_colors) +
-          scale_pattern_manual(values = source_patterns) +
-          theme(axis.text.x = element_text(angle = 90, hjust = 1),
-                axis.text = element_text(size = 8)) +
-          geom_hline(yintercept=75, linetype="dotted") +
-          geom_hline(yintercept=90, linetype="dotted", color = "gray50") +
-          #scale_y_continuous(breaks=scales::pretty_breaks(n=6)) +
-          ylab("% attributed to source") +
-          xlab("Individual ID and Strandedness") +
-          facet_wrap(~Individual_ID, ncol = 7) +
-          scale_pattern_angle_manual(values = source_angles)
-
-sources_plot_no_subsampling_individual_facet
-
-#ggsave("./06-publication/main_figures/Figure2D_npre_sourcetracker_results_no_rl.pdf", plot = sources_plot_no_subsampling_individual_facet, device = "pdf", scale = 1, width = 12, height = 6, units = c("in"), dpi = 300)
-```
-
 

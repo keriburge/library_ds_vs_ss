@@ -1,0 +1,3135 @@
+---
+title: "Preservation, alpha diversity, and beta diversity analyses for the NPost dataset"
+author: "Keri Burge"
+date: "`r format(Sys.time(), '%b %d, %Y')`"
+output:
+    github_document:
+        fig_width: 8
+        fig_height: 6
+        toc: true
+---
+
+
+```{r, eval=FALSE, echo=FALSE, message=FALSE}
+install.packages("cuperdec")
+```
+
+
+```{r, eval=TRUE, echo=FALSE, message=FALSE}
+#Load in all necessary packages
+library(colorspace)
+library(knitr)
+library(data.table)
+library(cuperdec)
+library(ggplot2)
+library(viridis)
+library(ggpubr)
+library(rstatix)
+library(purrr)
+library(patchwork)
+library(ggdist)
+library(gghalves)
+library(ggtext)
+library(gplots)
+library(cowplot)
+library(mixOmics)
+library(ggrepel)
+library(vegan)
+library(janitor)
+library(dplyr)
+library(tidyverse)
+```
+
+
+```{r setup}
+knitr::opts_knit$set(root.dir = normalizePath(".."))
+```
+
+
+#Information for saving
+```{r}
+folder <- "supplemental figures"
+file_modifier <- "NPost"
+
+#Ensure the supplemental figures folder exists
+#dir.create(file.path("./06-publication", folder), recursive = TRUE, showWarnings = FALSE)
+```
+
+
+#Colors
+```{r}
+double_color <- "#04387a"
+single_color <- "#6fbfdc"
+  
+```
+
+
+
+#Metadata table 
+# Load in metadata 
+```{r}
+metadata <- fread("./05-results/normalize_kraken/dsvss_npost_w_rl_subsampling_metadata.tsv") 
+
+metadata_no_rl <-metadata %>%
+  filter(Read_length_subsampling == "none")
+
+metadata_rl <- metadata %>%
+  filter(str_detect(Read_length_subsampling, "bp")) %>%
+  mutate(Strandedness2 = Strandedness) %>%
+  relocate(Strandedness2, .before = Read_length_subsampling) %>%
+  unite(Strandedness_rl, Strandedness2:Read_length_subsampling, sep = "_")
+
+metadata_rl_over50bp <- metadata %>%
+  filter(str_detect(Read_length_subsampling, "over50bp"))
+
+metadata_rl_under50bp <- metadata %>%
+  filter(str_detect(Read_length_subsampling, "under50bp"))
+```
+
+
+# Oral Species List 
+List of oral species in the format of the GTDB r207 database
+```{r}
+#GTDB Database
+gtdb_sources <- fread("./00-documentation/dsvss_gtdb_r207_species_sources.tsv", header = TRUE) 
+
+oral_gtdb <- gtdb_sources %>%
+  mutate(Isolation_Source = str_replace_all(Isolation_Source, "oral", "TRUE"),
+         Isolation_Source = str_replace_all(Isolation_Source, "other", "FALSE")) %>%
+  rename(Taxon = 1) %>%
+  mutate(Isolation_Source = as.logical(Isolation_Source)) %>%
+  mutate(Taxon = str_replace(Taxon, " (?:[A-Z]+)$", "")) %>%
+  unique() 
+
+```
+
+
+# Read in the kraken2 species table (this table was prepared in the tax_sourcetracker_prep file; decontam was run)
+
+```{r}
+kraken2_total_species <- fread("./05-results/normalize_kraken/dsvss_npost_kraken2_gtdb207_total_species_decontam.tsv") %>%
+  mutate(Species = str_replace(Species, " (?:[A-Z]+)$", "")) %>%
+  group_by(Species) %>%
+  summarise(across(where(is.numeric), \(x) sum(x, na.rm = TRUE))) %>%
+  mutate(across(-Species, ~ if_else(.x < 10, 0, .x))) #only count a species as present if it has at least 10 reads
+
+#fwrite(kraken2_total_species, "./05-results/normalize_kraken/dsvss_npost_kraken2_gtdb207_total_species_decontam_filtered.tsv", sep = "\t")
+
+#filter for no read length subsampling
+no_rl_samples <- metadata_no_rl %>%
+  dplyr::select(Sequencing_ID) %>%
+  pull()
+
+kraken2_total_species_no_rl <- kraken2_total_species %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(all_of(no_rl_samples)) %>%
+  rownames_to_column("Species")
+
+#filter for only read length subsampling
+## all read length subsampling
+rl_samples <- metadata_rl %>%
+  dplyr::select(Sequencing_ID) %>%
+  pull()
+
+kraken2_total_species_rl <- kraken2_total_species %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(all_of(rl_samples)) %>%
+  rownames_to_column("Species")
+
+## over 50 bp
+over50bp_samples <- metadata_rl %>%
+  dplyr::select(Sequencing_ID) %>%
+  filter(str_detect(Sequencing_ID, "over")) %>%
+  pull()
+
+kraken2_total_species_rl_over50bp <- kraken2_total_species %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(all_of(over50bp_samples)) %>%
+  rownames_to_column("Species")
+
+## under 50 bp
+under50bp_samples <- metadata_rl %>%
+  dplyr::select(Sequencing_ID) %>%
+  filter(str_detect(Sequencing_ID, "under")) %>%
+  pull()
+
+kraken2_total_species_rl_under50bp <- kraken2_total_species %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(all_of(under50bp_samples)) %>%
+  rownames_to_column("Species")
+
+```
+
+
+# Cuperdec Curves
+Cumulative percent decay (cuperdec) curves generated. Adaptive burn-in filter with a threshold of 46%. ‘Good’ (blue lines) indicates the sample passes the threshold and is “well preserved” with a sufficiently high proportion of oral taxa. ‘Bad’ (red lines) indicates that the sample does not pass the threshold and is “poorly preserved”, with an insufficient proportion of oral taxa.
+
+Indicate the oral database 
+```{r}
+#Determine what oral database will be used
+oral_db <- oral_gtdb
+
+```
+
+## No read length subsampling
+```{r}
+#Format metadata using load_map()  
+sample_metadata_no_rl <- load_map(metadata_no_rl,
+                     sample_col = "Sequencing_ID",
+                     source_col = "Subsampled_Individual_ID")
+
+#Format Kraken2 Species table using load_taxa_table() - converts to long form with proper column headings
+kraken2_species_cuperdec_no_rl <- load_taxa_table(kraken2_total_species_no_rl)
+
+
+#Calculate the curves
+curves_no_rl <- calculate_curve(kraken2_species_cuperdec_no_rl, database = oral_db)
+
+#Apply an adaptive burnin (only starting to considering whether a curve exceeds minimum percentage target source threshold (50%), from the point at which the difference of the percentage target source of one rank to the next, does not exceed the standard-deviation of all differences)
+burnin_result_no_rl <- adaptive_burnin_filter(curves_no_rl, percent_threshold = 50) 
+
+#Add additional metadata to the burnin result for a pass/fail heatmap
+burnin_result_no_rl <- burnin_result_no_rl %>%
+  rename(Sequencing_ID = 1) %>%
+  full_join(., metadata_no_rl)
+
+#Heat map showing whether or not samples passed the 50% threshold with an adaptive burn-in 
+#Reverse factor levels so samples are alphabetical
+burnin_result_no_rl$Subsampled_Individual_ID <- factor(burnin_result_no_rl$Subsampled_Individual_ID, levels = unique(burnin_result_no_rl$Subsampled_Individual_ID))
+reversed_levels_no_rl <- rev(levels(burnin_result_no_rl$Subsampled_Individual_ID))
+burnin_result_no_rl$Subsampled_Individual_ID <- factor(burnin_result_no_rl$Subsampled_Individual_ID, levels = reversed_levels_no_rl)
+
+#Plot the heat map 
+cuperdec_heatmap_no_rl <- burnin_result_no_rl %>%
+  rename(Preservation = Passed) %>%
+  mutate(Preservation = str_replace(Preservation, "TRUE", "Good"),
+         Preservation = str_replace(Preservation, "FALSE", "Bad"),
+         Preservation = factor(Preservation, levels = c("Good", "Bad"))) %>%
+  ggplot(., aes(x = Strandedness, y = Subsampled_Individual_ID, fill = Preservation)) +
+  geom_tile() +
+  theme_minimal() +
+  geom_tile(color = "white",
+            lwd = 1.5,
+            linetype = 1) +
+  labs(title = "", x = "Strandedness", y = "Individual ID") +
+  scale_fill_discrete(name = "Preservation", type = c("#666666", "#CCCCCC")) +
+  theme(legend.position="bottom", plot.title = element_text(hjust = 0.5)) 
+  
+cuperdec_heatmap_no_rl
+
+```
+
+
+```{r}
+#Add example cuperdec data so a plaque and environmental curve panel can be added to the panel figure of each library type
+#Cuperdec examples
+data(cuperdec_taxatable_ex)
+data(cuperdec_database_ex)
+data(cuperdec_metadata_ex)
+taxatable <- load_taxa_table(cuperdec_taxatable_ex)
+curves_ex <- calculate_curve(taxatable, database = oral_db)
+
+#Select 5 subplaque samples and 5 supplaque samples
+supPlaque_samples <- cuperdec_metadata_ex %>%
+  filter(str_detect(Env, "supPlaque")) %>%
+  slice(1:5) %>%
+  dplyr::select('#SampleID') %>%
+  pull()
+  
+subPlaque_samples <- cuperdec_metadata_ex %>%
+  filter(str_detect(Env, "subPlaque")) %>%
+  slice(1:5) %>%
+  dplyr::select('#SampleID') %>%
+  pull()
+  
+plaque_samples <- unlist(c(supPlaque_samples,subPlaque_samples ))
+
+#Select 10 environmental samples
+environmental_control_samples <- cuperdec_metadata_ex %>%
+  filter(str_detect(Env, "EnvironmentalControl")) %>%
+  slice(1:10) %>%
+  dplyr::select('#SampleID') %>%
+  pull()
+
+#Combine all samples
+samples <- unlist(c(plaque_samples, environmental_control_samples))
+
+#Calculate curves
+curves_ex_plaque <- curves_ex %>%
+  filter(Sample %in% samples)
+
+#Join with the ancient samples
+curves_full_no_rl <- curves_no_rl %>%
+  full_join(., curves_ex_plaque)
+
+#Create metadata table rows 
+samples_df <- as.data.frame(samples) %>%
+  rename(Sample = 1) %>%
+  mutate(Sample_Source = ifelse(str_detect(Sample, "SRR"), "Plaque", "Environment"))
+
+#Add the plaque and environmental data
+sample_metadata_w_sources_no_rl <- bind_rows(sample_metadata_no_rl, samples_df)
+
+#Arrange in alphabetical order of library types followed by plaque and environment
+group_order <- c("BAN001_5M", "CDM019_5M", "CDM020_5M", "FUM001_5M", "FUM002_5M", "FUM003_5M", "GDN001_5M", "GOY005_5M", "GOY006_5M", "GUE001_5M", "PES001_5M", "SPM002_5M", "VLD001_5M", "ZAF001_5M", "Plaque", "Environment")
+
+#Calculate curved with adaptive burnin (50%)
+burnin_result_no_rl <- adaptive_burnin_filter(curves_full_no_rl, percent_threshold = 50)
+
+#Set order of panes
+sample_metadata_w_sources_no_rl$Sample_Source <- factor(sample_metadata_w_sources_no_rl$Sample_Source, levels = group_order)
+
+```
+
+
+```{r}
+#Lets adjust the plot function to change axes labels and make the transparancey of lines based on strandedness
+plot_grouped_burnin <- function(curves, metadata_cuperdec, burnin_result, metadata_full, restrict_x, facet_cols = NULL) {
+  table_meta <- dplyr::left_join(curves,
+    metadata_cuperdec,
+    by = c("Sample")
+  ) %>%
+    dplyr::left_join(burnin_result, by = c("Sample"))
+  
+  metadata_full <- metadata_full %>%
+    rename(Sample = sample_column) %>%
+    dplyr::select(Sample, Strandedness)
+  
+  alpha_strandedness <- c("Double" = 1, "Single" = 0.5)
+  colors_preservation <- c("Good" = "#03bfc4", "Bad" = "#f8766d")
+  
+  table_meta <- table_meta %>%
+    full_join(., metadata_full) %>%
+    mutate(Strandedness = ifelse(is.na(Strandedness), "Double", Strandedness)) %>%
+    rename(Preservation = Passed) %>%
+    mutate(Preservation = str_replace(Preservation, "TRUE", "Good"),
+           Preservation = str_replace(Preservation, "FALSE", "Bad"),
+           Preservation = factor(Preservation, levels = c("Good", "Bad")))
+  
+  ggplot(table_meta, aes(x = Rank, y = Fraction_Target, group = Sample, color = Preservation, alpha = Strandedness)) +
+    geom_line() +
+    ylim(0, 100) +
+    xlab("Species Abundance Rank") +
+    ylab("Percentage Oral") +
+    facet_wrap(~Sample_Source, ncol = facet_cols) +
+    theme_minimal() +
+    scale_color_manual(values = colors_preservation, name = "Preservation") +
+    xlim(0, restrict_x) +
+    scale_alpha_manual(values = alpha_strandedness, name = "Strandedness")
+    
+}
+
+#Identify the column in the metadata_full table that contains the sample names
+sample_column <- "Sequencing_ID"
+
+#Plot 
+cuperdec_w_sources_no_rl <- plot_grouped_burnin(curves_full_no_rl, sample_metadata_w_sources_no_rl, burnin_result_no_rl, metadata_no_rl, restrict_x = 250)
+
+cuperdec_w_sources_no_rl
+
+```
+
+
+## Over 50 bp
+```{r}
+#Format metadata using load_map()  
+sample_metadata_rl_over50bp <- load_map(metadata_rl_over50bp,
+                     sample_col = "Sequencing_ID",
+                     source_col = "Subsampled_Individual_ID")
+
+#Format Kraken2 Species table using load_taxa_table() - converts to long form with proper column headings
+kraken2_species_cuperdec_rl_over50bp <- load_taxa_table(kraken2_total_species_rl_over50bp)
+
+
+#Calculate the curves
+curves_rl_over50bp <- calculate_curve(kraken2_species_cuperdec_rl_over50bp, database = oral_db)
+
+#Apply an adaptive burnin (only starting to considering whether a curve exceeds minimum percentage target source threshold (50%), from the point at which the difference of the percentage target source of one rank to the next, does not exceed the standard-deviation of all differences)
+burnin_result_rl_over50bp <- adaptive_burnin_filter(curves_rl_over50bp, percent_threshold = 50) 
+
+#Add additional metadata to the burnin result for a pass/fail heatmap
+burnin_result_rl_over50bp <- burnin_result_rl_over50bp %>%
+  rename(Sequencing_ID = 1) %>%
+  full_join(., metadata_rl_over50bp)
+
+#Heat map showing whether or not samples passed the 50% threshold with an adaptive burn-in 
+#Reverse factor levels so samples are alphabetical
+burnin_result_rl_over50bp$Subsampled_Individual_ID <- factor(burnin_result_rl_over50bp$Subsampled_Individual_ID, levels = unique(burnin_result_rl_over50bp$Subsampled_Individual_ID))
+
+reversed_levels_rl_over50bp <- rev(levels(burnin_result_rl_over50bp$Subsampled_Individual_ID))
+
+burnin_result_rl_over50bp$Subsampled_Individual_ID <- factor(burnin_result_rl_over50bp$Subsampled_Individual_ID, levels = reversed_levels_rl_over50bp)
+
+#Plot the heat map 
+cuperdec_heatmap_rl_over50bp <- burnin_result_rl_over50bp %>%
+  rename(Preservation = Passed) %>%
+  mutate(Preservation = str_replace(Preservation, "TRUE", "Good"),
+         Preservation = str_replace(Preservation, "FALSE", "Bad"),
+         Preservation = factor(Preservation, levels = c("Good", "Bad"))) %>%
+  ggplot(., aes(x = Strandedness, y = Subsampled_Individual_ID, fill = Preservation)) +
+  geom_tile() +
+  theme_minimal() +
+  geom_tile(color = "white",
+            lwd = 1.5,
+            linetype = 1) +
+  labs(title = "", x = "Strandedness", y = "Individual ID") +
+  scale_fill_discrete(name = "Preservation", type = c("#666666", "#CCCCCC")) +
+  theme(legend.position="bottom", plot.title = element_text(hjust = 0.5)) 
+  
+cuperdec_heatmap_rl_over50bp
+
+```
+
+
+```{r}
+#Join environmental and plaque samples with the ancient samples
+curves_full_rl_over50bp <- curves_rl_over50bp %>%
+  full_join(., curves_ex_plaque)
+
+#Add the plaque and environmental data
+sample_metadata_w_sources_rl_over50bp <- bind_rows(sample_metadata_rl_over50bp, samples_df)
+
+#Arrange in alphabetical order of library types followed by plaque and environment
+group_order <- c("BAN001_5M_over50bp", "CDM019_5M_over50bp", "CDM020_5M_over50bp", "FUM002_5M_over50bp", "FUM003_5M_over50bp", "GDN001_5M_over50bp", "GOY005_5M_over50bp", "GOY006_5M_over50bp", "PES001_5M_over50bp", "VLD001_5M_over50bp", "Plaque", "Environment")
+
+#Calculate curved with adaptive burnin (50%)
+burnin_result_rl_over50bp <- adaptive_burnin_filter(curves_full_rl_over50bp, percent_threshold = 50)
+
+#Set order of panes
+sample_metadata_w_sources_rl_over50bp$Sample_Source <- factor(sample_metadata_w_sources_rl_over50bp$Sample_Source, levels = group_order)
+
+#Identify the column in the metadata_full table that contains the sample names
+sample_column <- "Sequencing_ID"
+
+#Plot 
+cuperdec_w_sources_rl_over50bp <- plot_grouped_burnin(curves_full_rl_over50bp, sample_metadata_w_sources_rl_over50bp, burnin_result_rl_over50bp, metadata_rl_over50bp, restrict_x = 250)
+
+cuperdec_w_sources_rl_over50bp
+
+```
+
+
+## Under 50 bp
+```{r}
+#Format metadata using load_map()  
+sample_metadata_rl_under50bp <- load_map(metadata_rl_under50bp,
+                     sample_col = "Sequencing_ID",
+                     source_col = "Subsampled_Individual_ID")
+
+#Format Kraken2 Species table using load_taxa_table() - converts to long form with proper column headings
+kraken2_species_cuperdec_rl_under50bp <- load_taxa_table(kraken2_total_species_rl_under50bp)
+
+
+#Calculate the curves
+curves_rl_under50bp <- calculate_curve(kraken2_species_cuperdec_rl_under50bp, database = oral_db)
+
+#Apply an adaptive burnin (only starting to considering whether a curve exceeds minimum percentage target source threshold (50%), from the point at which the difference of the percentage target source of one rank to the next, does not exceed the standard-deviation of all differences)
+burnin_result_rl_under50bp <- adaptive_burnin_filter(curves_rl_under50bp, percent_threshold = 50) 
+
+#Add additional metadata to the burnin result for a pass/fail heatmap
+burnin_result_rl_under50bp <- burnin_result_rl_under50bp %>%
+  rename(Sequencing_ID = 1) %>%
+  full_join(., metadata_rl_under50bp)
+
+#Heat map showing whether or not samples passed the 50% threshold with an adaptive burn-in 
+#Reverse factor levels so samples are alphabetical
+burnin_result_rl_under50bp$Subsampled_Individual_ID <- factor(burnin_result_rl_under50bp$Subsampled_Individual_ID, levels = unique(burnin_result_rl_under50bp$Subsampled_Individual_ID))
+
+reversed_levels_rl_under50bp <- rev(levels(burnin_result_rl_under50bp$Subsampled_Individual_ID))
+
+burnin_result_rl_under50bp$Subsampled_Individual_ID <- factor(burnin_result_rl_under50bp$Subsampled_Individual_ID, levels = reversed_levels_rl_under50bp)
+
+#Plot the heat map 
+cuperdec_heatmap_rl_under50bp <- burnin_result_rl_under50bp %>%
+  rename(Preservation = Passed) %>%
+  mutate(Preservation = str_replace(Preservation, "TRUE", "Good"),
+         Preservation = str_replace(Preservation, "FALSE", "Bad"),
+         Preservation = factor(Preservation, levels = c("Good", "Bad"))) %>%
+  ggplot(., aes(x = Strandedness, y = Subsampled_Individual_ID, fill = Preservation)) +
+  geom_tile() +
+  theme_minimal() +
+  geom_tile(color = "white",
+            lwd = 1.5,
+            linetype = 1) +
+  labs(title = "", x = "Strandedness", y = "Individual ID") +
+  scale_fill_discrete(name = "Preservation", type = c("#666666", "#CCCCCC")) +
+  theme(legend.position="bottom", plot.title = element_text(hjust = 0.5)) 
+  
+cuperdec_heatmap_rl_under50bp
+
+```
+
+
+```{r}
+#Join environmental and plaque samples with the ancient samples
+curves_full_rl_under50bp <- curves_rl_under50bp %>%
+  full_join(., curves_ex_plaque)
+
+#Add the plaque and environmental data
+sample_metadata_w_sources_rl_under50bp <- bind_rows(sample_metadata_rl_under50bp, samples_df)
+
+#Arrange in alphabetical order of library types followed by plaque and environment
+group_order <- c("BAN001_5M_under50bp", "CDM019_5M_under50bp", "CDM020_5M_under50bp", "FUM002_5M_under50bp", "FUM003_5M_under50bp", "GDN001_5M_under50bp", "GOY005_5M_under50bp", "GOY006_5M_under50bp", "PES001_5M_under50bp", "VLD001_5M_under50bp", "Plaque", "Environment")
+
+#Calculate curved with adaptive burnin (50%)
+burnin_result_rl_under50bp <- adaptive_burnin_filter(curves_full_rl_under50bp, percent_threshold = 50)
+
+#Set order of panes
+sample_metadata_w_sources_rl_under50bp$Sample_Source <- factor(sample_metadata_w_sources_rl_under50bp$Sample_Source, levels = group_order)
+
+#Identify the column in the metadata_full table that contains the sample names
+sample_column <- "Sequencing_ID"
+
+#Plot 
+cuperdec_w_sources_rl_under50bp <- plot_grouped_burnin(curves_full_rl_under50bp, sample_metadata_w_sources_rl_under50bp, burnin_result_rl_under50bp, metadata_rl_under50bp, restrict_x = 250)
+
+cuperdec_w_sources_rl_under50bp
+
+```
+
+## Combine read length subsampling
+```{r}
+#Combine plots
+cuperdec_combined_rl <- ggarrange(
+  cuperdec_w_sources_no_rl, cuperdec_heatmap_no_rl, 
+  cuperdec_w_sources_rl_over50bp, cuperdec_heatmap_rl_over50bp,
+  cuperdec_w_sources_rl_under50bp, cuperdec_heatmap_rl_under50bp,
+  labels = c("A", "B", "C", "D", "E", "F"), 
+  ncol = 2, nrow = 3, 
+  legend = "bottom"
+)
+
+cuperdec_combined_rl
+
+#ggsave(filename = file.path("./06-publication", paste0(folder), paste0("SI_Fig5_cuperdec_combined_plots_", file_modifier, "_read_length_subsampling.pdf")), plot = cuperdec_combined_rl, device = "pdf", scale = 1, width = 16, height = 18, units = c("in"), dpi = 300)
+```
+
+
+#Alpha Diversity - No read length subsampling
+## Total Species
+```{r}
+#Kraken2 Total Species Table
+
+#Difference in total number of species
+kraken2_species_cuperdec_no_rl <- load_taxa_table(kraken2_total_species_no_rl)
+
+#Calculate number of species reported
+kraken2_total_species_table_no_rl <- kraken2_species_cuperdec_no_rl %>%
+  group_by(Sample) %>%
+  summarize(count_distinct_kraken2 = n_distinct(Taxon)) %>% #count how many unique taxa are reported in each library
+  rename(Sequencing_ID = 1) %>%
+  full_join(., metadata_no_rl) %>%
+  drop_na()
+
+```
+
+
+## Oral Species
+```{r}
+#Oral species table
+oral_species <- oral_db %>%
+  filter(str_detect(Isolation_Source, "TRUE")) %>%
+  rename(Species = 1) %>%
+  dplyr::select(-Isolation_Source)
+  
+oral_species_table_no_rl <- kraken2_total_species_no_rl %>%
+  inner_join(., oral_species, by = "Species") 
+
+#fwrite(oral_species_table_no_rl, "./05-results/normalize_kraken/dsvss_npost_kraken2_gtdb207_oral_species_decontam_filtered.tsv", sep = "\t", col.names = TRUE)
+```
+
+
+```{r}
+#Calculate the number of classified reads to add to the metadata table
+
+classified_reads_no_rl <- kraken2_total_species_no_rl %>%
+  adorn_totals() %>%
+  filter(Species == "Total") %>%
+  pivot_longer(!Species, names_to = "Sequencing_ID", values_to = "classified_reads") %>%
+  dplyr::select(-Species)
+
+classified_reads_table_no_rl <- classified_reads_no_rl %>%
+  full_join(metadata_no_rl %>%
+              dplyr::select(Sequencing_ID, Strandedness, read_count, kraken2_preservation)) %>%
+  rename(total_reads = read_count,
+         preservation = kraken2_preservation)
+
+oral_reads_no_rl <- oral_species_table_no_rl %>%
+  adorn_totals() %>%
+  filter(Species == "Total") %>%
+  pivot_longer(!Species, names_to = "Sequencing_ID", values_to = "oral_reads") %>%
+  dplyr::select(-Species)
+
+classified_reads_table_no_rl <- classified_reads_table_no_rl %>%
+  full_join(., oral_reads_no_rl) %>%
+  dplyr::select(Sequencing_ID, Strandedness, preservation, total_reads, classified_reads, oral_reads)
+
+```
+
+
+```{r}
+norm_kraken_percentages <- classified_reads_table_no_rl %>%
+  mutate(percent_oral_of_total = (oral_reads/total_reads)*100) %>%
+  mutate(percent_oral_of_class = (oral_reads/classified_reads)*100)
+```
+
+
+Count number of oral species per sample
+```{r}
+kraken2_oral_species_table_no_rl <- load_taxa_table(oral_species_table_no_rl)
+
+kraken2_species_summary_table_no_rl <- kraken2_oral_species_table_no_rl %>%
+  group_by(Sample) %>%
+  summarize(count_distinct_kraken2_filtered = n_distinct(Taxon)) %>%
+  dplyr::rename(Sequencing_ID = 1) %>%
+  full_join(., metadata_no_rl) %>%
+  drop_na() %>%
+  full_join(., kraken2_total_species_table_no_rl) %>%
+  dplyr::rename(Total = count_distinct_kraken2,
+         Oral = count_distinct_kraken2_filtered) %>%
+  relocate(Total, .after = Oral) %>%
+  pivot_longer(Oral:Total, names_to = "pre_v_post", values_to = "count")
+
+```
+
+## Raincloud plot
+Raincloud plot for total observed species
+```{r}
+kraken2_species_summary_table_no_rl <- kraken2_species_summary_table_no_rl %>%
+  mutate(pre_v_post = str_replace(pre_v_post, "Total", "Total Species"),
+         pre_v_post = str_replace(pre_v_post, "Oral", "Oral Species")) 
+
+#Statistics - Total v. Oral (ds % ss)
+stats_kraken_alpha_diversity_wilcox_strandedness_no_rl <- kraken2_species_summary_table_no_rl %>%
+  group_by(Strandedness) %>%
+  wilcox_test(count ~ (pre_v_post), paired = TRUE) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")
+
+stats_kraken_alpha_diversity_effectsize_strandedness_no_rl <- kraken2_species_summary_table_no_rl %>%
+  group_by(Strandedness) %>%
+  wilcox_effsize(formula = count ~ pre_v_post, paired = TRUE) 
+
+#Stats for plot
+wilcox_results <- kraken2_species_summary_table_no_rl %>%
+  group_by(forcats::fct_rev(pre_v_post)) %>%
+  wilcox_test(count ~ Strandedness, paired = TRUE) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")
+
+effect_size_labels <- kraken2_species_summary_table_no_rl %>%
+  group_by(forcats::fct_rev(pre_v_post)) %>%
+  wilcox_effsize(formula = count ~ Strandedness, paired = TRUE) %>%
+  mutate(effectsize_cat = case_when(
+    magnitude == "small" ~ "†",     
+    magnitude == "moderate" ~ "††",
+    magnitude == "large" ~ "†††"))
+
+wilcox_results <- wilcox_results %>%
+  left_join(effect_size_labels) %>%
+  mutate(annotation = paste(p.adj.signif, effectsize_cat)) %>%
+  dplyr::rename(pre_v_post = 1)
+
+annotations <- wilcox_results %>%
+  group_by(pre_v_post) %>%
+  summarize(annotation = dplyr::first(annotation),.groups = 'drop') 
+
+
+
+#PLOT
+color <- c(double_color, single_color)
+
+kraken2_raincloud_plot_no_rl <- kraken2_species_summary_table_no_rl %>%
+  ggplot(., aes(x=Strandedness, y=count)) +
+  ggdist::stat_halfeye(
+     aes(color = Strandedness,
+        fill = after_scale(lighten(color, .2))),
+    adjust = 0.5, 
+    width = 0.6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = NA
+    ) + 
+  ggdist::stat_dots(
+    side = "left", 
+    dotsize = 1.5, 
+    justification = 1.175, 
+    binwidth =10,
+    alpha = .3,
+    range_scale = .4,
+    aes(color = Strandedness, color = after_scale(darken(color, .1, space = "HLS")))
+  ) +
+  geom_boxplot(
+    aes(color = Strandedness,
+        color = after_scale(darken(color, .1, space = "HLS")),
+        fill = after_scale(desaturate(lighten(color, .8), .4))),
+    width = .15, 
+    outlier.shape = NA
+    ) +
+  facet_grid(~forcats::fct_rev(pre_v_post)) +
+  theme_minimal() +
+  theme(
+    legend.position = "none", 
+    plot.title = element_text(hjust = 0.5)
+    ) +
+  labs(
+    title = "", 
+    y = "Observed Species", 
+    x = ""
+    ) +
+  coord_cartesian(xlim = c(1.2, NA), clip = "off") +
+  scale_color_manual(values = color, guide = "none") +
+  scale_fill_manual(values = color, guide = "none") +
+  theme(axis.text.x = element_text(size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14),
+            strip.text = element_text(size = 14)) +
+  expand_limits(y = c(0, 450)) +
+  geom_text(data = annotations, aes(x = 1.5, y = 435, label = annotation), vjust = -0.5)
+
+kraken2_raincloud_plot_no_rl
+
+```
+
+
+## Shannon Diversity
+Shannon Diversity plot
+```{r}
+#Calculate the Shannon diversity index
+#Total Species
+kraken2_total_species_formatted_no_rl <- kraken2_total_species_no_rl %>%
+  pivot_longer(2:ncol(.), names_to = "Sample", values_to = "Counts") %>%
+  pivot_wider(names_from = "Species", values_from = "Counts") %>%
+  column_to_rownames("Sample")
+
+shannon_diversity_total_no_rl <- diversity(kraken2_total_species_formatted_no_rl, index="shannon") %>%
+  as.data.frame() %>%
+  dplyr::rename(shannon_index_total = 1) %>%
+  rownames_to_column("Sequencing_ID")
+
+#Oral Species
+#Need to reformat species table so species are the columns and samples are the rows
+kraken2_oral_species_formatted_no_rl <- oral_species_table_no_rl %>%
+  pivot_longer(2:ncol(.), names_to = "Sample", values_to = "Counts") %>%
+  pivot_wider(names_from = "Species", values_from = "Counts") %>%
+  column_to_rownames("Sample")
+
+shannon_diversity_oral_no_rl <- diversity(kraken2_oral_species_formatted_no_rl, index="shannon") %>%
+  as.data.frame() %>%
+  dplyr::rename(shannon_index_oral = 1) %>%
+  rownames_to_column("Sequencing_ID")
+
+#Combine tables
+metadata_w_shannon_no_rl <- metadata_no_rl %>%
+  full_join(., shannon_diversity_total_no_rl, by = "Sequencing_ID") %>%
+  full_join(., shannon_diversity_oral_no_rl, by = "Sequencing_ID") %>%
+  pivot_longer(shannon_index_total:shannon_index_oral, names_to = "total_v_oral", values_to = "shannon_index") 
+
+#Statistics - Total v. Oral (ds + ss)
+stats_kraken_alpha_diversity_wilcox_strandedness_no_rl <- metadata_w_shannon_no_rl %>%
+  group_by(Strandedness) %>%
+  wilcox_test(shannon_index ~ (total_v_oral), paired = TRUE) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")
+
+stats_kraken_alpha_diversity_effectsize_strandedness_no_rl <- metadata_w_shannon_no_rl %>%
+  group_by(Strandedness) %>%
+  wilcox_effsize(formula = shannon_index ~ total_v_oral, paired = TRUE) 
+
+#Stats for plot
+wilcox_results <- metadata_w_shannon_no_rl %>%
+  group_by(total_v_oral) %>%
+  wilcox_test(shannon_index ~ Strandedness, paired = TRUE) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")
+
+effect_size_labels <- metadata_w_shannon_no_rl %>%
+  group_by(total_v_oral) %>%
+  wilcox_effsize(formula = shannon_index ~ Strandedness, paired = TRUE) %>%
+  mutate(effectsize_cat = case_when(
+    magnitude == "small" ~ "†",     
+    magnitude == "moderate" ~ "††",
+    magnitude == "large" ~ "†††"))
+
+wilcox_results <- wilcox_results %>%
+  left_join(effect_size_labels) %>%
+  mutate(annotation = paste(p.adj.signif, effectsize_cat))
+
+annotations <- wilcox_results %>%
+  group_by(total_v_oral) %>%
+  summarize(annotation = dplyr::first(annotation),
+            y_position = 5, .groups = 'drop') %>%
+  mutate(total_v_oral = str_replace(total_v_oral, "shannon_index_oral", "Oral Species"),
+         total_v_oral = str_replace(total_v_oral, "shannon_index_total", "Total Species"))
+
+#Plot
+kraken2_raincloud_plot_shannon_no_rl <- metadata_w_shannon_no_rl %>%
+  mutate(total_v_oral = str_replace_all(total_v_oral, "shannon_index_oral", "Oral Species"),
+         total_v_oral = str_replace_all(total_v_oral, "shannon_index_total", "Total Species")) %>%
+  ggplot(., aes(x=Strandedness, y=shannon_index)) +
+  ggdist::stat_halfeye(
+     aes(color = Strandedness,
+        fill = after_scale(lighten(color, .2))),
+    adjust = .5, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = NA
+    ) + 
+  ggdist::stat_dots(
+    side = "left", 
+    dotsize = 0.8, 
+    justification = 1.175, 
+    binwidth = 0.2,
+    alpha = .3,
+    range_scale = .4,
+    aes(color = Strandedness, color = after_scale(darken(color, .1, space = "HLS")))
+  ) +
+  geom_boxplot(
+    aes(color = Strandedness,
+        color = after_scale(darken(color, .1, space = "HLS")),
+        fill = after_scale(desaturate(lighten(color, .8), .4))),
+    width = .15, 
+    outlier.shape = NA
+    ) +
+  facet_grid(~forcats::fct_rev(total_v_oral)) +
+  theme_minimal() +
+  theme(
+    legend.position = "none", 
+    plot.title = element_text(hjust = 0.5)
+    ) +
+  labs(
+    title = "", 
+    y = "Shannon Index", 
+    x = ""
+    ) +
+  coord_cartesian(xlim = c(1.2, NA), clip = "off") +
+  scale_color_manual(values = color, guide = "none") +
+  scale_fill_manual(values = color, guide = "none") +
+  theme(axis.text.x = element_text(size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14),
+            strip.text = element_text(size = 14)) +
+  #stat_compare_means(method = "wilcox.test", paired = TRUE, label = "p.signif", label.x = 1.5, label.y = 4.6, size = 4, hide.ns = TRUE) +
+  expand_limits(y = c(0, 5)) +
+  geom_text(data = annotations, aes(x = 1.5, y = 4.7, label = annotation), vjust = -0.5)
+
+kraken2_raincloud_plot_shannon_no_rl
+
+```
+
+
+Combine the Observed species and Shannon diversity plots
+```{r}
+alpha_diversity_combined_no_rl <- ggarrange(
+  kraken2_raincloud_plot_no_rl, kraken2_raincloud_plot_shannon_no_rl, 
+  labels = c("A", "B"), 
+  ncol = 1, nrow = 2, 
+  common.legend = TRUE, 
+  legend = "bottom"
+)
+
+alpha_diversity_combined_no_rl
+
+```
+
+
+#Alpha Diversity - Read length subsampling
+## Total Species
+
+
+```{r}
+#Kraken2 Total Species Table
+
+#Difference in total number of species
+kraken2_species_cuperdec_rl <- load_taxa_table(kraken2_total_species_rl)
+
+#Calculate number of species reported
+kraken2_total_species_table_rl <- kraken2_species_cuperdec_rl %>%
+  group_by(Sample) %>%
+  summarize(count_distinct_kraken2 = n_distinct(Taxon)) %>% #count how many unique taxa are reported in each library
+  rename(Sequencing_ID = 1) %>%
+  full_join(., metadata_rl) %>%
+  drop_na()
+
+```
+
+
+## Oral Species
+```{r}
+#Oral species table
+oral_species <- oral_db %>%
+  filter(str_detect(Isolation_Source, "TRUE")) %>%
+  rename(Species = 1) %>%
+  dplyr::select(-Isolation_Source)
+  
+oral_species_table_rl <- kraken2_total_species_rl %>%
+  inner_join(., oral_species, by = "Species") 
+
+#fwrite(oral_species_table_rl, "./05-results/normalize_kraken/dsvss_npost_kraken2_gtdb207_rl_oral_species_decontam_filtered.tsv", sep = "\t", col.names = TRUE)
+```
+
+
+```{r}
+#Calculate the number of classified reads to add to the metadata table
+
+classified_reads_rl <- kraken2_total_species_rl %>%
+  adorn_totals() %>%
+  filter(Species == "Total") %>%
+  pivot_longer(!Species, names_to = "Sequencing_ID", values_to = "classified_reads") %>%
+  dplyr::select(-Species)
+
+classified_reads_table_rl <- classified_reads_rl %>%
+  full_join(metadata_rl %>%
+              dplyr::select(Sequencing_ID, Strandedness, Strandedness_rl, read_count, kraken2_preservation)) %>%
+  rename(total_reads = read_count,
+         preservation = kraken2_preservation)
+
+oral_reads_rl <- oral_species_table_rl %>%
+  adorn_totals() %>%
+  filter(Species == "Total") %>%
+  pivot_longer(!Species, names_to = "Sequencing_ID", values_to = "oral_reads") %>%
+  dplyr::select(-Species)
+
+classified_reads_table_rl <- classified_reads_table_rl %>%
+  full_join(., oral_reads_rl) %>%
+  dplyr::select(Sequencing_ID, Strandedness, Strandedness_rl, preservation, total_reads, classified_reads, oral_reads)
+
+```
+
+
+Does read length subsampling cause a different proportion of reads to be classified?
+```{r}
+classified_reads_table_rl_summary <- classified_reads_table_rl %>%
+  mutate(percent_classified = (classified_reads/total_reads)*100,
+         percent_oral = (oral_reads/total_reads)*100) %>%
+  group_by(Strandedness_rl) %>%
+  summarize(median_percent_classified = median(percent_classified),
+            sd_classified = sd(percent_classified),
+            median_percent_oral = median(percent_oral),
+            sd_oral = sd(percent_oral),
+            median_total_reads = median(total_reads)) 
+```
+
+
+
+Count number of oral species per sample
+```{r}
+kraken2_oral_species_table_rl <- load_taxa_table(oral_species_table_rl)
+
+kraken2_species_summary_table_rl <- kraken2_oral_species_table_rl %>%
+  group_by(Sample) %>%
+  summarize(count_distinct_kraken2_filtered = n_distinct(Taxon)) %>%
+  dplyr::rename(Sequencing_ID = 1) %>%
+  full_join(., metadata_rl) %>%
+  drop_na() %>%
+  full_join(., kraken2_total_species_table_rl) %>%
+  dplyr::rename(Total = count_distinct_kraken2,
+         Oral = count_distinct_kraken2_filtered) %>%
+  relocate(Total, .after = Oral) %>%
+  pivot_longer(Oral:Total, names_to = "pre_v_post", values_to = "count")
+
+```
+
+
+## Raincloud plot
+Raincloud plot for total observed species
+BAN because dsLib under 50bp has 0 oral reads -> change NA to 0 and keep in alpha diversity analyses but remove from PCAs bc skews
+```{r}
+kraken2_species_summary_table_rl <- kraken2_species_summary_table_rl %>%
+  mutate(count = replace_na(count, 0)) %>%
+  mutate(pre_v_post = str_replace(pre_v_post, "Total", "Total Species"),
+         pre_v_post = str_replace(pre_v_post, "Oral", "Oral Species")) %>%
+  mutate(Strandedness_rl = str_replace_all(Strandedness_rl, "Double_over50bp", "Double Over 50bp"),
+         Strandedness_rl = str_replace_all(Strandedness_rl, "Single_over50bp", "Single Over 50bp"),
+         Strandedness_rl = str_replace_all(Strandedness_rl, "Double_under50bp", "Double Under 50bp"),
+         Strandedness_rl = str_replace_all(Strandedness_rl, "Single_under50bp", "Single Under 50bp"))
+
+#Statistics - Total v. Oral (ds % ss)
+stats_kraken_alpha_diversity_wilcox_strandedness_rl <- kraken2_species_summary_table_rl %>%
+  group_by(Strandedness_rl) %>%
+  wilcox_test(count ~ (pre_v_post), paired = TRUE) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")
+
+stats_kraken_alpha_diversity_effectsize_strandedness_rl <- kraken2_species_summary_table_rl %>%
+  group_by(Strandedness_rl) %>%
+  wilcox_effsize(formula = count ~ pre_v_post, paired = TRUE) 
+
+#Stats for plot
+wilcox_results <- kraken2_species_summary_table_rl %>%
+  group_by(forcats::fct_rev(pre_v_post)) %>%
+  wilcox_test(count ~ Strandedness_rl, paired = TRUE,
+              comparisons = list(
+                c("Double Over 50bp", "Double Under 50bp"),
+                c("Double Over 50bp", "Single Over 50bp"),
+                c("Double Over 50bp", "Single Under 50bp"),
+                c("Single Over 50bp", "Double Under 50bp"),
+                c("Single Over 50bp", "Single Under 50bp"),
+                c("Double Under 50bp", "Single Under 50bp")
+              )) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")
+
+effect_size_labels <- kraken2_species_summary_table_rl %>%
+  group_by(forcats::fct_rev(pre_v_post)) %>%
+  wilcox_effsize(formula = count ~ Strandedness_rl, paired = TRUE,
+                 comparisons = list(
+                  c("Double Over 50bp", "Double Under 50bp"),
+                  c("Double Over 50bp", "Single Over 50bp"),
+                  c("Double Over 50bp", "Single Under 50bp"),
+                  c("Single Over 50bp", "Double Under 50bp"),
+                  c("Single Over 50bp", "Single Under 50bp"),
+                  c("Double Under 50bp", "Single Under 50bp")
+                )) %>%
+  mutate(effectsize_cat = case_when(
+    magnitude == "small" ~ "†",     
+    magnitude == "moderate" ~ "††",
+    magnitude == "large" ~ "†††"))
+
+wilcox_results <- wilcox_results %>%
+  left_join(effect_size_labels) %>%
+  mutate(annotation = paste(p.adj.signif, effectsize_cat)) %>%
+  dplyr::rename(pre_v_post = 1) %>%
+  mutate(y.position = c(525, 625, 575, 475, 425, 675,  # Total Species
+                        300, 375, 450, 525, 600, 675))        # Oral Species
+
+#PLOT
+color <- c(double_color, single_color)
+
+kraken2_raincloud_plot_rl <- kraken2_species_summary_table_rl %>%
+  ggplot(., aes(x=Strandedness_rl, y=count)) +
+  ggdist::stat_halfeye(
+     aes(color = Strandedness,
+        fill = after_scale(lighten(color, .2))),
+    adjust = 0.5, 
+    width = 0.6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = NA
+    ) + 
+  ggdist::stat_dots(
+    side = "left", 
+    dotsize = 1.5, 
+    justification = 1.175, 
+    binwidth = 8,
+    alpha = .3,
+    range_scale = .4,
+    aes(color = Strandedness, color = after_scale(darken(color, .1, space = "HLS")))
+  ) +
+  geom_boxplot(
+    aes(color = Strandedness,
+        color = after_scale(darken(color, .1, space = "HLS")),
+        fill = after_scale(desaturate(lighten(color, .8), .4))),
+    width = .15, 
+    outlier.shape = NA
+    ) +
+  facet_grid(~forcats::fct_rev(pre_v_post)) +
+  theme_minimal() +
+  theme(
+    legend.position = "none", 
+    plot.title = element_text(hjust = 0.5)
+    ) +
+  labs(
+    title = "", 
+    y = "Observed Species", 
+    x = ""
+    ) +
+  coord_cartesian(xlim = c(1.2, NA), clip = "off") +
+  scale_color_manual(values = color, guide = "none") +
+  scale_fill_manual(values = color, guide = "none") +
+  theme(axis.text.x = element_text(size = 10, angle = 45, hjust = 1), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14),
+            strip.text = element_text(size = 14)) +
+  expand_limits(y = c(0, 700))+
+  stat_pvalue_manual(
+    wilcox_results,
+    label = "annotation",
+    y.position = "y.position",
+    xmin = "group1",
+    xmax = "group2",
+    tip.length = 0.01,
+    bracket.size = 0.5,
+    size = 3.5
+  )
+
+kraken2_raincloud_plot_rl
+
+```
+
+
+
+## Shannon Diversity
+Shannon Diversity plot
+```{r}
+#Calculate the Shannon diversity index
+#Total Species
+kraken2_total_species_formatted_rl <- kraken2_total_species_rl %>%
+  pivot_longer(2:ncol(.), names_to = "Sample", values_to = "Counts") %>%
+  pivot_wider(names_from = "Species", values_from = "Counts") %>%
+  column_to_rownames("Sample")
+
+shannon_diversity_total_rl <- diversity(kraken2_total_species_formatted_rl, index="shannon") %>%
+  as.data.frame() %>%
+  dplyr::rename(shannon_index_total = 1) %>%
+  rownames_to_column("Sequencing_ID")
+
+#Oral Species
+#Need to reformat species table so species are the columns and samples are the rows
+kraken2_oral_species_formatted_rl <- oral_species_table_rl %>%
+  pivot_longer(2:ncol(.), names_to = "Sample", values_to = "Counts") %>%
+  pivot_wider(names_from = "Species", values_from = "Counts") %>%
+  column_to_rownames("Sample")
+
+shannon_diversity_oral_rl <- diversity(kraken2_oral_species_formatted_rl, index="shannon") %>%
+  as.data.frame() %>%
+  dplyr::rename(shannon_index_oral = 1) %>%
+  rownames_to_column("Sequencing_ID")
+
+#Combine tables
+metadata_w_shannon_rl <- metadata_rl %>%
+  full_join(., shannon_diversity_total_rl, by = "Sequencing_ID") %>%
+  full_join(., shannon_diversity_oral_rl, by = "Sequencing_ID") %>%
+  pivot_longer(shannon_index_total:shannon_index_oral, names_to = "total_v_oral", values_to = "shannon_index") %>%
+  mutate(Strandedness_rl = str_replace_all(Strandedness_rl, "Double_over50bp", "Double Over 50bp"),
+         Strandedness_rl = str_replace_all(Strandedness_rl, "Single_over50bp", "Single Over 50bp"),
+         Strandedness_rl = str_replace_all(Strandedness_rl, "Double_under50bp", "Double Under 50bp"),
+         Strandedness_rl = str_replace_all(Strandedness_rl, "Single_under50bp", "Single Under 50bp")) 
+  
+
+#Statistics - Total v. Oral (ds + ss)
+stats_kraken_alpha_diversity_wilcox_strandedness_rl <- metadata_w_shannon_rl %>%
+  group_by(Strandedness_rl) %>%
+  wilcox_test(shannon_index ~ (total_v_oral), paired = TRUE) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")
+
+stats_kraken_alpha_diversity_effectsize_strandedness_rl <- metadata_w_shannon_rl %>%
+  group_by(Strandedness_rl) %>%
+  wilcox_effsize(formula = shannon_index ~ total_v_oral, paired = TRUE) 
+
+#Stats for plot
+wilcox_results <- metadata_w_shannon_rl %>%
+  group_by(total_v_oral) %>%
+  wilcox_test(shannon_index ~ Strandedness_rl, paired = TRUE,
+               comparisons = list(
+                c("Double Over 50bp", "Double Under 50bp"),
+                c("Double Over 50bp", "Single Over 50bp"),
+                c("Double Over 50bp", "Single Under 50bp"),
+                c("Single Over 50bp", "Double Under 50bp"),
+                c("Single Over 50bp", "Single Under 50bp"),
+                c("Double Under 50bp", "Single Under 50bp")
+              )) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")
+
+effect_size_labels <- metadata_w_shannon_rl %>%
+  group_by(total_v_oral) %>%
+  wilcox_effsize(formula = shannon_index ~ Strandedness_rl, paired = TRUE,
+                   comparisons = list(
+                c("Double Over 50bp", "Double Under 50bp"),
+                c("Double Over 50bp", "Single Over 50bp"),
+                c("Double Over 50bp", "Single Under 50bp"),
+                c("Single Over 50bp", "Double Under 50bp"),
+                c("Single Over 50bp", "Single Under 50bp"),
+                c("Double Under 50bp", "Single Under 50bp")
+              )) %>%
+  mutate(effectsize_cat = case_when(
+    magnitude == "small" ~ "†",     
+    magnitude == "moderate" ~ "††",
+    magnitude == "large" ~ "†††"))
+
+wilcox_results <- wilcox_results %>%
+  left_join(effect_size_labels) %>%
+  mutate(annotation = paste(p.adj.signif, effectsize_cat)) %>%
+  mutate(total_v_oral = str_replace(total_v_oral, "shannon_index_oral", "Oral Species"),
+         total_v_oral = str_replace(total_v_oral, "shannon_index_total", "Total Species")) %>%
+  mutate(y.position = c(5, 5.4, 5.8, 6.2, 6.6, 7,  # Oral Species
+                        5, 5.4, 5.8, 6.2, 6.6, 7))  # Total Species
+
+#Plot
+kraken2_raincloud_plot_shannon_rl <- metadata_w_shannon_rl %>%
+  mutate(total_v_oral = str_replace_all(total_v_oral, "shannon_index_oral", "Oral Species"),
+         total_v_oral = str_replace_all(total_v_oral, "shannon_index_total", "Total Species")) %>%
+  ggplot(., aes(x=Strandedness_rl, y=shannon_index)) +
+  ggdist::stat_halfeye(
+     aes(color = Strandedness,
+        fill = after_scale(lighten(color, .2))),
+    adjust = .5, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = NA
+    ) + 
+  ggdist::stat_dots(
+    side = "left", 
+    dotsize = 0.2, 
+    justification = 1.175, 
+    binwidth = 0.7,
+    alpha = .3,
+    range_scale = .4,
+    aes(color = Strandedness, color = after_scale(darken(color, .1, space = "HLS")))
+  ) +
+  geom_boxplot(
+    aes(color = Strandedness,
+        color = after_scale(darken(color, .1, space = "HLS")),
+        fill = after_scale(desaturate(lighten(color, .8), .4))),
+    width = .15, 
+    outlier.shape = NA
+    ) +
+  facet_grid(~forcats::fct_rev(total_v_oral)) +
+  theme_minimal() +
+  theme(
+    legend.position = "none", 
+    plot.title = element_text(hjust = 0.5)
+    ) +
+  labs(
+    title = "", 
+    y = "Shannon Index", 
+    x = ""
+    ) +
+  coord_cartesian(xlim = c(1.2, NA), clip = "off") +
+  scale_color_manual(values = color, guide = "none") +
+  scale_fill_manual(values = color, guide = "none") +
+  theme(axis.text.x = element_text(size = 10, angle = 45, hjust = 1), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14),
+            strip.text = element_text(size = 14)) +
+  expand_limits(y = c(0, 7)) +
+  stat_pvalue_manual(
+    wilcox_results,
+    label = "annotation",
+    y.position = "y.position",
+    xmin = "group1",
+    xmax = "group2",
+    tip.length = 0.01,
+    bracket.size = 0.5,
+    size = 3
+  )
+  
+
+kraken2_raincloud_plot_shannon_rl
+
+```
+
+
+Combine the Observed species and Shannon diversity plots
+```{r}
+alpha_diversity_combined_rl <- ggarrange(
+  kraken2_raincloud_plot_rl, kraken2_raincloud_plot_shannon_rl, 
+  labels = c("A", "B"), 
+  ncol = 1, nrow = 2, 
+  common.legend = TRUE, 
+  legend = "bottom"
+)
+
+alpha_diversity_combined_rl
+
+#ggsave(file.path("./06-publication", paste0(folder), paste0("SI_Fig26CD_", file_modifier, "_rl_subsampling_alpha_diversity_combined_plot.pdf")), plot = alpha_diversity_combined_rl, device = "pdf", scale = 1, width = 12, height = 10, units = c("in"), dpi = 300)
+```
+
+
+
+# Beta Diversity - No read length subsampling
+
+## Total Species
+Create a PCA of total number of species
+```{r}
+kraken2_total_species_no_rl_edited <- kraken2_total_species_no_rl %>%
+  pivot_longer(!Species, names_to = "Sequencing_ID", values_to = "Counts") %>%
+  mutate(Counts = Counts + 1) %>%
+  pivot_wider(names_from = "Species", values_from = "Counts") %>%
+  filter(!str_detect(Sequencing_ID, "Isolation_Source")) %>%
+  column_to_rownames("Sequencing_ID")
+  
+result.pca.kraken2_no_rl <- pca(kraken2_total_species_no_rl_edited, logratio = "CLR") 
+
+exp_var <- paste0(round(result.pca.kraken2_no_rl$prop_expl_var$X * 100, 2), "%") # explained variance for x- and y-labels
+
+plotIndiv(result.pca.kraken2_no_rl)
+
+
+pca_kraken2_no_rl <- result.pca.kraken2_no_rl$variates %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  dplyr::rename(Sequencing_ID = 1,
+         PC1 = 2,
+         PC2 = 3) %>%
+  inner_join(., metadata_no_rl, by = "Sequencing_ID")
+
+permanova_dist_matrix <- dist(pca_kraken2_no_rl[, c("PC1", "PC2")], method = "euclidean")
+adonis_result <- adonis2(permanova_dist_matrix ~ Strandedness, data = pca_kraken2_no_rl) #Strandedness, Individual_ID, kraken2_preservation
+r_squared_value <- adonis_result$R2[1] 
+p_value <- adonis_result$`Pr(>F)`[1]
+p_value_formatted <- ifelse(p_value < 0.001, "< 0.001",
+                            as.character(signif(p_value, digits = 2)))
+r_squared_value_formatted <- ifelse(r_squared_value < 0.001, "< 0.001",
+                            as.character(signif(r_squared_value, digits = 2)))
+
+
+#keep color for strandedness, and change shape for preservation 
+color <- c(double_color, single_color)
+
+
+kraken2_pca_strandedness_no_rl <- pca_kraken2_no_rl %>%
+  mutate(kraken2_preservation = factor(kraken2_preservation, levels = c("Good", "Bad"))) %>%
+  ggplot(., aes(x = PC1, y = PC2, color = Strandedness)) +
+    geom_point(aes(shape = kraken2_preservation), size = 4) +
+    theme_minimal() +
+    labs(title = "", y = paste("PC2", " - ", exp_var[2]), x = paste("PC1", " - ", exp_var[1])) +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    scale_color_discrete(name = "Strandedness", labels = c("Double", "Single")) +
+    scale_shape_discrete(name = "Preservation", labels = c("Good", "Bad")) +
+    geom_line(aes(group = Individual_ID), color = "#CCCCCC", linetype = "dashed") +
+  scale_colour_manual(name = "Strandedness", values = color) +
+  theme(axis.text.x = element_text(size = 12),  
+        axis.text.y = element_text(size = 12),
+        strip.text = element_text(size = 12),
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        legend.position = "right") +
+        geom_text_repel(data = subset(pca_kraken2_no_rl, Strandedness == "Double"), 
+                        aes(label = Individual_ID), 
+                        size = 3, color = "black", segment.color = NA,
+                        nudge_y = -0.8) +
+        coord_equal() +
+    annotate("text", x = -25, y = 20,
+           label = paste("R2 =", r_squared_value_formatted,
+                         "\np-value =", p_value_formatted))
+ 
+kraken2_pca_strandedness_no_rl
+
+
+
+```
+
+
+```{r}
+#Define colors and shapes for plotting
+Strandedness_colors <- c("Double" = double_color, "Single" = single_color)
+kraken2_preservation_shapes <- c("Good" = 16, "Bad" = 17)
+
+#Biplot Function
+plot_pca_bi <- function(df, pc1, pc2, metadata_group1, metadata_group2, columntitle) {
+    metadata_group_colors <- get(paste(metadata_group1, "_colors", sep = ""))
+    metadata_group_shapes <- get(paste(metadata_group2, "_shapes", sep = ""))
+   
+    arrow_pc <- enquo(columntitle)
+    
+    exp_var <- paste0(round(df$prop_expl_var$X * 100, 2), "%") # explained variance for x- and y-labels
+    
+    # select only the PCs from the PCA and add metadata
+    df_X <- df$variates$X %>%
+              as.data.frame() %>%
+              rownames_to_column("Sequencing_ID") %>%
+              inner_join(metadata, by = "Sequencing_ID")
+    
+    metadata_group1 = df_X[[metadata_group1]]
+    metadata_group2 = df_X[[metadata_group2]]
+    
+    corr_lam <- df$sdev[c("PC1", "PC2")] * sqrt(nrow(df_X))
+
+    df_X <- df_X %>%
+      mutate(PC1 = PC1 / corr_lam[1],
+             PC2 = PC2 / corr_lam[2])
+
+    # select the correct PC column and explained variance for PC1
+    if (pc1 == 'PC1') {
+        Pc1 <- df_X$PC1
+        exp_var_pc1 <- exp_var[1]
+        xaxis <- c("PC1")
+    } else if (pc1 == 'PC2') {
+        Pc1 <- df_X$PC2
+        exp_var_pc1 <- exp_var[2]
+        xaxis <- c("PC2")
+    } 
+    
+    # select the correct PC column and explained variance for PC2
+    if (pc2 == 'PC1') {
+        Pc2 <- df_X$PC1
+        exp_var_pc2 <- exp_var[1]
+        yaxis <- c("PC1")
+ } else if (pc2 == 'PC2') {
+       Pc2 <- df_X$PC2
+       exp_var_pc2 <- exp_var[2]
+       yaxis <- c("PC2")
+    }
+    
+    # Identify the 10 pathways that have highest positive and negative loadings in the selected PC
+    pws_10 <- df$loadings$X %>%
+      as.data.frame(.) %>%
+      rownames_to_column(var = "Taxon") %>%
+      top_n(10, !!arrow_pc) %>%
+      arrange(desc(!!arrow_pc)) %>%   #sort by size of loading to get strongest first
+      mutate(label = row_number())
+
+    neg_10 <- df$loadings$X %>%
+      as.data.frame(.) %>%
+      rownames_to_column(var = "Taxon") %>%
+      top_n(-10, !!arrow_pc) %>%
+      arrange(!!arrow_pc) %>%  #sort to get the smallest (most negative/strongest) first
+      mutate(label = row_number())
+
+    pca_plot_bi <- df_X %>%
+      mutate(metadata_group2 = factor(metadata_group2, levels = c("Good", "Bad"))) %>%
+      ggplot(., aes(x = Pc1, y = Pc2, color = metadata_group1)) +
+      geom_point(size = 4, aes(shape = metadata_group2) )+
+      geom_segment(data = pws_10,
+                   aes(xend = get(paste(pc1)), yend = get(paste(pc2))),
+                   x = 0, y = 0, colour = "black",
+                   size = 0.3,
+                   arrow = arrow(length = unit(0.03, "npc"))) +
+      #geom_label_repel(data = pws_10,
+      #             aes(x = get(paste(pc1)), y = get(paste(pc2)), label = label), #using label instead of taxon
+      #             size = 2, 
+      #             colour = "black",
+      #             label.padding = 0.1, 
+      #             box.padding = 0.1, #
+      #             point.padding = 0.1, 
+      #             force = 10,
+      #             max.overlaps = Inf) + 
+      geom_segment(data = neg_10,
+                   aes(xend = get(paste(pc1)), yend = get(paste(pc2))),
+                   x = 0, y = 0, colour = "grey50",
+                   size = 0.3,
+                   arrow = arrow(length = unit(0.03, "npc"))) +
+      #geom_label_repel(data = neg_10,
+      #             aes(x = get(paste(pc1)), y = get(paste(pc2)), label = label), #using label instead of taxon
+      #             size = 2, 
+      #             colour = "red",
+      #             label.padding = 0.1, 
+      #             box.padding = 0.1, 
+      #             point.padding = 0.1, 
+      #             force = 10, 
+      #             max.overlaps = Inf) + 
+      labs(x = paste(xaxis, " - ", exp_var_pc1),
+           y = paste(yaxis, " - ", exp_var_pc2),
+           color = "Strandedness",
+           shape = "Preservation") +
+      scale_color_manual(values = metadata_group_colors) +
+      scale_shape_manual(values = metadata_group_shapes) +
+      theme_minimal() + theme(text = element_text(size = 16)) +
+      theme(text = element_text(size=16)) +
+      theme(legend.position = "bottom") +
+      geom_line(aes(group = Individual_ID), color = "#CCCCCC", linetype = "dashed") +
+      geom_text_repel(aes(label = Individual_ID), color = "black", segment.color = NA) +
+      coord_equal()
+      
+
+    return(pca_plot_bi) #pca_plot_bi, pws_10, or neg_10
+}
+
+pca_kraken2_biplot_PC1_no_rl <- plot_pca_bi(result.pca.kraken2_no_rl, "PC1", "PC2", "Strandedness", "kraken2_preservation", PC1)
+pca_kraken2_biplot_PC2_no_rl <- plot_pca_bi(result.pca.kraken2_no_rl, "PC1", "PC2", "Strandedness", "kraken2_preservation", PC2)
+
+pca_kraken2_biplot_PC1_no_rl
+pca_kraken2_biplot_PC2_no_rl
+
+pca_biplots_combined_no_rl <- ggarrange(
+  pca_kraken2_biplot_PC1_no_rl, pca_kraken2_biplot_PC2_no_rl, 
+  labels = c("A", "B"), 
+  ncol = 1, nrow = 2, 
+  common.legend = TRUE, 
+  legend = "bottom")
+
+pca_biplots_combined_no_rl
+
+#ggsave(file.path("../../06-publication", paste0(folder), paste0("SI_Fig21AB_", file_modifier, "_no_rl_kraken2_pca_biplot_combined_PCs_total_species_decontam.pdf")) , plot = pca_biplots_combined_no_rl, device = "pdf", scale = 1, width = 8, height = 12, units = c("in"), dpi = 300)
+```
+
+
+## Oral Species
+```{r}
+#Fill in data for total oral species v. filtered oral species w/ no contam
+kraken2_oral_species_no_rl <- fread("./05-results/normalize_kraken/dsvss_npost_kraken2_gtdb207_oral_species_decontam_filtered.tsv", header = TRUE) 
+
+data <- kraken2_oral_species_no_rl #select the oral set to use
+
+metadata <- fread("./05-results/normalize_kraken/dsvss_npost_w_rl_subsampling_metadata.tsv") 
+
+metadata_no_rl <- metadata %>%
+  filter(Read_length_subsampling == "none")
+```
+
+
+```{r}
+kraken2_oral_species_no_rl <- data %>%
+  pivot_longer(!Species, names_to = "Sequencing_ID", values_to = "Counts") %>%
+  mutate(Counts = Counts + 1) %>%
+  pivot_wider(names_from = "Species", values_from = "Counts") %>%
+  filter(!str_detect(Sequencing_ID, "Isolation_Source")) %>%
+  column_to_rownames("Sequencing_ID")
+  
+result.pca.kraken2_no_rl <- pca(kraken2_oral_species_no_rl, logratio = "CLR") 
+
+exp_var <- paste0(round(result.pca.kraken2_no_rl$prop_expl_var$X * 100, 2), "%") # explained variance for x- and y-labels
+
+pca_kraken2_no_rl <- result.pca.kraken2_no_rl$variates %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  dplyr::rename(Sequencing_ID = 1,
+         PC1 = 2,
+         PC2 = 3) %>%
+  inner_join(., metadata_no_rl, by = "Sequencing_ID")
+```
+
+Perform a PERMANOVA (Permutational Multivariate Analysis of Variance) test using the adonis2 function from the vegan package
+```{r}
+#Create a metadata file with sample IDs, grouping info, and PCA scores
+permanova_data_no_rl <- pca_kraken2_no_rl %>%
+  dplyr::select(Sequencing_ID, Individual_ID, PC1, PC2, Strandedness, kraken2_preservation) %>%
+  column_to_rownames("Sequencing_ID")
+
+#Create a distance matrix of just PCA scores
+permanova_dist_matrix_no_rl <- dist(permanova_data_no_rl[, c("PC1", "PC2")], method = "euclidean")
+
+#Run adonis2
+adonis_result <- adonis2(permanova_dist_matrix_no_rl ~ Strandedness, data = permanova_data_no_rl) #Strandedness, Individual_ID, kraken2_preservation
+
+r_squared_value <- adonis_result$R2[1] 
+  
+p_value <- adonis_result$`Pr(>F)`[1]
+
+p_value_formatted <- ifelse(p_value < 0.001, "< 0.001",
+                            as.character(signif(p_value, digits = 2)))
+
+r_squared_value_formatted <- ifelse(r_squared_value < 0.001, "< 0.001",
+                            as.character(signif(r_squared_value, digits = 2)))
+```
+
+
+```{r}
+#keep color for strandedness, and change shape for preservation 
+color <- c(double_color, single_color)
+
+kraken2_pca_strandedness_no_rl <- pca_kraken2_no_rl %>%
+  mutate(kraken2_preservation = factor(kraken2_preservation, levels = c("Good", "Bad"))) %>%
+  ggplot(., aes(x = PC1, y = PC2, color = Strandedness)) +
+    geom_point(aes(shape = kraken2_preservation), size = 4) +
+    theme_minimal() +
+    labs(title = "", y = paste("PC2", " - ", exp_var[2]), x = paste("PC1", " - ", exp_var[1])) +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    scale_color_discrete(name = "Strandedness", labels = c("Double", "Single")) +
+    scale_shape_discrete(name = "Preservation") +
+    geom_line(aes(group = Individual_ID), color = "#CCCCCC", linetype = "dashed") +
+    scale_color_manual(name = "Strandedness", values = color) +
+    theme(axis.text.x = element_text(size = 12),  
+          axis.text.y = element_text(size = 12),
+          strip.text = element_text(size = 12),
+          legend.text = element_text(size = 12),
+          legend.title = element_text(size = 12),
+          axis.title.x = element_text(size = 12),
+          axis.title.y = element_text(size = 12),
+          legend.position = "bottom") +
+    geom_text_repel(data = subset(pca_kraken2_no_rl, Strandedness == "Double"), 
+                        aes(label = Individual_ID), 
+                        size = 3, color = "black", segment.color = NA,
+                        nudge_y = -0.8) +
+    coord_equal() +
+  annotate("text", x = 10, y = -10,
+           label = paste("R2 =", r_squared_value_formatted,
+                         "\np-value =", p_value_formatted)) 
+ 
+kraken2_pca_strandedness_no_rl
+
+```
+
+
+### Biplot
+```{r}
+kraken2_oral_species_no_rl <- data %>%
+  pivot_longer(!Species, names_to = "Sequencing_ID", values_to = "Counts") %>%
+  mutate(Counts = Counts + 1) %>%
+  pivot_wider(names_from = "Species", values_from = "Counts") %>%
+  filter(!str_detect(Sequencing_ID, "Isolation_Source")) %>%
+  column_to_rownames("Sequencing_ID")
+
+#Create PCA using mixomics package
+result.pca.kraken2_no_rl <- pca(kraken2_oral_species_no_rl, ncomp = 2, logratio = "CLR") 
+
+#Metadata table (will be added w/in the function)
+full_metadata <- fread("./05-results/normalize_kraken/dsvss_npost_w_rl_subsampling_metadata.tsv") %>%
+  filter(Read_length_subsampling == "none") %>%
+  dplyr::select(Sequencing_ID, Strandedness, kraken2_preservation, Individual_ID)
+
+#Define colors and shapes for plotting
+Strandedness_colors <- c("Double" = double_color, "Single" = single_color)
+kraken2_preservation_shapes <- c("Good" = 16, "Bad" = 17)
+
+#Biplot Function
+plot_pca_bi <- function(df, pc1, pc2, metadata_group1, metadata_group2, columntitle) {
+    metadata_group_colors <- get(paste(metadata_group1, "_colors", sep = ""))
+    metadata_group_shapes <- get(paste(metadata_group2, "_shapes", sep = ""))
+   
+    arrow_pc <- enquo(columntitle)
+    
+    exp_var <- paste0(round(df$prop_expl_var$X * 100, 2), "%") # explained variance for x- and y-labels
+    
+    # select only the PCs from the PCA and add metadata
+    df_X <- df$variates$X %>%
+              as.data.frame() %>%
+              rownames_to_column("Sequencing_ID") %>%
+              inner_join(full_metadata, by = "Sequencing_ID")
+    
+    metadata_group1 = df_X[[metadata_group1]]
+    metadata_group2 = df_X[[metadata_group2]]
+    
+    corr_lam <- df$sdev[c("PC1", "PC2")] * sqrt(nrow(df_X))
+
+    df_X <- df_X %>%
+      mutate(PC1 = PC1 / corr_lam[1],
+             PC2 = PC2 / corr_lam[2])
+
+    # select the correct PC column and explained variance for PC1
+    if (pc1 == 'PC1') {
+        Pc1 <- df_X$PC1
+        exp_var_pc1 <- exp_var[1]
+        xaxis <- c("PC1")
+    } else if (pc1 == 'PC2') {
+        Pc1 <- df_X$PC2
+        exp_var_pc1 <- exp_var[2]
+        xaxis <- c("PC2")
+    } 
+    
+    # select the correct PC column and explained variance for PC2
+    if (pc2 == 'PC1') {
+        Pc2 <- df_X$PC1
+        exp_var_pc2 <- exp_var[1]
+        yaxis <- c("PC1")
+ } else if (pc2 == 'PC2') {
+       Pc2 <- df_X$PC2
+       exp_var_pc2 <- exp_var[2]
+       yaxis <- c("PC2")
+    }
+    
+    # Identify the 10 pathways that have highest positive and negative loadings in the selected PC
+    pws_10 <- df$loadings$X %>%
+      as.data.frame(.) %>%
+      rownames_to_column(var = "Taxon") %>%
+      top_n(10, !!arrow_pc) %>%
+      arrange(desc(!!arrow_pc)) %>%   #sort by size of loading to get strongest first
+      mutate(label = row_number())
+
+    neg_10 <- df$loadings$X %>%
+      as.data.frame(.) %>%
+      rownames_to_column(var = "Taxon") %>%
+      top_n(-10, !!arrow_pc) %>%
+      arrange(!!arrow_pc) %>%  #sort to get the smallest (most negative/strongest) first
+      mutate(label = row_number())
+
+    pca_plot_bi <- df_X %>%
+      mutate(metadata_group2 = factor(metadata_group2, levels = c("Good", "Bad"))) %>%
+      ggplot(., aes(x = Pc1, y = Pc2, color = metadata_group1)) +
+      geom_point(size = 4, aes(shape = metadata_group2) )+
+      geom_segment(data = pws_10,
+                   aes(xend = get(paste(pc1)), yend = get(paste(pc2))),
+                   x = 0, y = 0, colour = "black",
+                   size = 0.3,
+                   arrow = arrow(length = unit(0.03, "npc"))) +
+      #geom_label_repel(data = pws_10,
+      #             aes(x = get(paste(pc1)), y = get(paste(pc2)), label = label), #using label instead of taxon
+      #             size = 2, 
+      #             colour = "black",
+      #             label.padding = 0.1, 
+      #             box.padding = 0.1, #
+      #             point.padding = 0.1, 
+      #             force = 10,
+      #             max.overlaps = Inf) + 
+      geom_segment(data = neg_10,
+                   aes(xend = get(paste(pc1)), yend = get(paste(pc2))),
+                   x = 0, y = 0, colour = "grey",
+                   size = 0.3,
+                   arrow = arrow(length = unit(0.03, "npc"))) +
+      #geom_label_repel(data = neg_10,
+      #             aes(x = get(paste(pc1)), y = get(paste(pc2)), label = label), #using label instead of taxon
+      #             size = 2, 
+      #             colour = "red",
+      #             label.padding = 0.1, 
+      #             box.padding = 0.1, 
+      #             point.padding = 0.1, 
+      #             force = 10, 
+      #             max.overlaps = Inf) + 
+      labs(x = paste(xaxis, " - ", exp_var_pc1),
+           y = paste(yaxis, " - ", exp_var_pc2),
+           color = "Strandedness",
+           shape = "Preservation") +
+      scale_color_manual(values = metadata_group_colors) +
+      scale_shape_manual(values = metadata_group_shapes) +
+      theme_minimal() + theme(text = element_text(size = 16)) +
+      theme(text = element_text(size=16)) +
+      theme(legend.position = "bottom") +
+      geom_line(aes(group = Individual_ID), color = "#CCCCCC", linetype = "dashed") +
+      geom_text_repel(aes(label = Individual_ID), color = "black", segment.color = NA) +
+      coord_equal()
+      
+    return(pca_plot_bi) #pca_plot_bi, pws_10, neg_10
+}
+
+pca_kraken2_biplot_PC1 <- plot_pca_bi(result.pca.kraken2_no_rl, "PC1", "PC2", "Strandedness", "kraken2_preservation", PC1)
+pca_kraken2_biplot_PC2 <- plot_pca_bi(result.pca.kraken2_no_rl, "PC1", "PC2", "Strandedness", "kraken2_preservation", PC2)
+
+pca_kraken2_biplot_PC1
+pca_kraken2_biplot_PC2
+
+oral_pca_biplots_combined_no_rl <- ggarrange(
+  pca_kraken2_biplot_PC1, pca_kraken2_biplot_PC2, 
+  labels = c("A", "B"), 
+  ncol = 1, nrow = 2, 
+  common.legend = TRUE, 
+  legend = "bottom")
+
+oral_pca_biplots_combined_no_rl
+
+#ggsave(file.path("../../06-publication", paste0(folder), paste0("SI_Fig21CD_", file_modifier, "_no_rl_kraken2_pca_biplot_combined_PCs_oral_species_decontam.pdf")), plot = oral_pca_biplots_combined_no_rl, device = "pdf", scale = 1, width = 8, height = 12, units = c("in"), dpi = 300)
+```
+
+
+# Sources
+```{r}
+#Read in sources kraken2 species table
+kraken2_sources <- fread("./05-results/dsvss_sources_controls_kraken2_gtdb207_total_species.tsv") 
+
+#Remove controls samples so it is just the source samples
+control_sample_list <- fread("./05-results/dsvss_controls_sourcetracker_metadata.tsv") %>%
+  dplyr::select(Library_ID) %>%
+  pull()
+
+kraken2_sources <- kraken2_sources %>%
+  dplyr::select(-all_of(control_sample_list))
+
+#Filter with a 0.005% relative abundance cut-off and clean up the species names
+
+kraken2_sources_totals <-  kraken2_sources %>%
+  column_to_rownames("Species") %>%
+   mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  rownames_to_column("Species") %>%
+  relocate("Total", .after = Species) 
+
+total_sum <- sum(kraken2_sources_totals$Total)
+
+kraken2_sources_abundance <- kraken2_sources_totals %>%
+  mutate(Relative_Abundance = (Total / total_sum)*100) %>% 
+  relocate(Relative_Abundance, .after = Species)  
+
+kraken2_sources_filtered <- kraken2_sources_abundance %>%
+  filter(Relative_Abundance >= 0.005) %>% #using a 0.005% cut-off
+  dplyr::select(-Total, -Relative_Abundance) %>%
+  mutate(Species = str_replace(Species, " (?:[A-Z]+)$", "")) %>%
+  group_by(Species) %>%
+  summarise(across(where(is.numeric), \(x) sum(x, na.rm = TRUE))) %>%
+  mutate(across(-Species, ~ if_else(.x < 10, 0, .x)))
+```
+
+```{r}
+#read in kraken2 5M no read length subsampling total species table
+kraken2_total_species <- fread("./05-results/normalize_kraken/dsvss_npost_kraken2_gtdb207_total_species_decontam.tsv") %>%
+  mutate(Species = str_replace(Species, " (?:[A-Z]+)$", "")) %>%
+  group_by(Species) %>%
+  summarise(across(where(is.numeric), \(x) sum(x, na.rm = TRUE))) %>%
+  mutate(across(-Species, ~ if_else(.x < 10, 0, .x)))
+  
+no_rl_samples <- metadata_no_rl %>%
+  dplyr::select(Sequencing_ID) %>%
+  pull()
+
+kraken2_total_species_no_rl <- kraken2_total_species %>%
+  column_to_rownames("Species") %>%
+  dplyr::select(all_of(no_rl_samples)) %>%
+  rownames_to_column("Species")
+
+#Combine with total species kraken2 table
+combined_kraken2_species <- full_join(kraken2_total_species_no_rl, kraken2_sources_filtered, by = "Species") %>%
+  mutate(across(everything(), ~ replace_na(.x, 0)))
+
+#Read in source metadata
+mapfile <- fread("./05-results/normalize_kraken/dsvss_npost_no_read_length_sourcetracker_input_mapping_file.tsv") %>%
+  dplyr::rename(Sequencing_ID = 1) %>%
+  dplyr::select(Sequencing_ID, Study, Env, SourceSink) %>%
+  filter(!str_detect(Sequencing_ID, "bp"))
+  
+metadata_full <- metadata_no_rl %>%
+  full_join(., mapfile) %>%
+  mutate(Control_or_Sample = case_when(grepl("source", SourceSink) ~ "Control", TRUE ~ "Sample")) 
+```
+
+
+
+## Rarefied PCoA
+To resolve the issue with samples clustering by the number of reads and low read length, try making a rarefied PCoA instead
+```{r}
+#Convert to a phyloseq object to rarefy the table before creating the PCoA
+library(phyloseq)
+
+#Make the species column rownames
+combined_kraken2_species_formatted <- combined_kraken2_species %>%
+  select(-ERR1883424, -ERR1883437) %>% # filter out samples with a species sum of 0 after filtering
+  column_to_rownames("Species")
+
+#Convert the species table to a matrix
+species_matrix <- as.matrix(combined_kraken2_species_formatted)
+
+#Convert the matrix to a phyloseq object
+ps <- phyloseq(otu_table(species_matrix, taxa_are_rows=TRUE))
+
+#Format metadata correctly
+metadata_formatted <- metadata_full %>%
+  dplyr::rename(SampleID = Sequencing_ID) %>%
+  column_to_rownames("SampleID")
+
+#Convert metadata to a phyloseq object
+sample_data_obj <- sample_data(metadata_formatted)
+
+#Add the metadata to the phyloseq object
+ps <- merge_phyloseq(ps, sample_data_obj)
+
+#Rarefy the species table
+#Extract the sample data as a data frame
+species_table <- otu_table(ps)
+sample_sums <- sample_sums(species_table)
+
+#Find the minimum sample sum
+min_sample_sum <- min(sample_sums)
+
+#Rarefy
+physeq_rarefied <- rarefy_even_depth(species_table, sample.size = min_sample_sum, rngseed = 1)
+
+#Convert to distance matrix (Jaccard dissimilarity)
+physeq_rarefied_formatted <- as.data.frame(physeq_rarefied)
+
+physeq_rarefied_formatted <- physeq_rarefied_formatted %>%
+  rownames_to_column("Species") %>%
+  pivot_longer(2:ncol(.), names_to = "SampleID", values_to = "counts") %>%
+  pivot_wider(names_from = "Species", values_from = "counts") %>%
+  arrange(SampleID) %>%
+  column_to_rownames("SampleID") 
+
+dist_matrix <- vegdist(physeq_rarefied_formatted, method = "jaccard")
+
+#PCoA Calculation
+pcoa_result <- ape::pcoa(dist_matrix)
+pcoa_coordinates <- pcoa_result$vectors[, 1:2]
+colnames(pcoa_coordinates) <- c("PCoA1", "PCoA2")
+
+#Combine PCoA coordinates with metadata
+pcoa_df <- as.data.frame(pcoa_coordinates)
+pcoa_df$Sequencing_ID <- rownames(pcoa_df)
+pcoa_df <- merge(pcoa_df, metadata_full, by = "Sequencing_ID")
+
+#Variation explained by each axis
+eig_values <- pcoa_result$values$Relative_eig
+var_explained <- round(eig_values[1:2] * 100, digits = 2)
+x_lab <- paste0("PCoA1 - ", round(var_explained[1], 2), "%")
+y_lab <- paste0("PCoA2 - ", round(var_explained[1], 2), "%")
+
+#Permanova
+adonis_result <- adonis2(dist_matrix ~ Env, data = pcoa_df)
+
+r_squared_value <- adonis_result$R2[1] 
+p_value <- adonis_result$`Pr(>F)`[1]
+p_value_formatted <- ifelse(p_value < 0.001, "< 0.001",
+                            as.character(signif(p_value, digits = 2)))
+r_squared_value_formatted <- ifelse(r_squared_value < 0.001, "< 0.001",
+                            as.character(signif(r_squared_value, digits = 2)))
+
+#Define colors, shapes, and plot
+
+colors <- c("Ancient Calculus - ssLib" = single_color, "Ancient Calculus - dsLib" = double_color,
+  "Modern Calculus" = "#bfaed4",  
+  "Plaque"          = "#3f007d",  
+  "Gut"             = "#c05b16",  
+  "Skin"            = "#fdc187",  
+  "Environment"     = "#7fc97f",  
+  "Unknown"         = "#d9d9d9"   
+)
+
+shapes <- c("Double" = 16, "Source" = 15, "Single" = 17)
+
+sources_pcoa <- pcoa_df %>%
+  mutate(Env = str_replace_all(Env, "calculus", "Ancient Calculus"),
+         Env = str_replace_all(Env, "environment", "Environment"),
+         Env = str_replace_all(Env, "modern_calc", "Modern Calculus"),
+         Env = str_replace_all(Env, "skin", "Skin"),
+         Env = str_replace_all(Env, "gut", "Gut"),
+         Env = str_replace_all(Env, "plaque", "Plaque")) %>%
+  mutate(Env = case_when(Strandedness == "Single" ~ "Ancient Calculus - ssLib", TRUE ~ Env)) %>%
+  mutate(Env = case_when(Strandedness == "Double" ~ "Ancient Calculus - dsLib", TRUE ~ Env)) %>%
+  mutate(SourceSink = str_replace_all(SourceSink, "source", "Source"),
+         SourceSink = str_replace_all(SourceSink, "sink", "Sink")) %>%
+  mutate(Individual_ID = case_when(is.na(Individual_ID) ~ Library_ID, TRUE ~ Individual_ID)) %>%
+  mutate(Strandedness = case_when(is.na(Strandedness) ~ "Source", TRUE ~ Strandedness)) %>%
+  mutate(Env = factor(Env, levels = c("Ancient Calculus - dsLib", "Ancient Calculus - ssLib", "Modern Calculus", "Plaque", "Gut", "Skin", "Environment"))) %>%
+  ggplot(., aes(x = PCoA1, y = PCoA2, color = Env, shape = Strandedness)) +
+    geom_point(aes(alpha = Control_or_Sample), size = 2.5) +
+    theme_minimal() +
+    labs(title = "") +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    scale_color_manual(name = "Environment", values = colors) +
+    scale_shape_manual(name = "Sample", values = shapes) +
+    #geom_line(aes(group = Individual_ID), color = "#CCCCCC", linetype = "dashed") +
+    theme(axis.text.x = element_text(size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14)) +
+  scale_alpha_manual(values = c("Control" = 0.7, "Sample" = 1)) +
+  xlab(x_lab) +
+  ylab(y_lab) +
+  guides(alpha = "none") +
+  geom_line(data = pcoa_df %>% filter(!is.na(Individual_ID)), 
+              aes(group = Individual_ID), 
+              color = "#CCCCCC", 
+              linetype = "dashed") +
+  geom_text(data = pcoa_df %>% filter(Strandedness %in% c("Single")), 
+              aes(label = Individual_ID), 
+              hjust = -0.3, 
+              vjust = -0.3, 
+              size = 3, color = "black") +
+  coord_equal() +
+  annotate("text", x = 0.4, y =  0.25,
+           label = paste("R2 =", r_squared_value_formatted,
+                         "\np-value =", p_value_formatted))
+
+sources_pcoa
+
+#ggsave(file.path("./06-publication", paste0(folder), paste0("SI_Fig7C_", file_modifier, "_no_rl_kraken2_sources_total_species_pcoa_rarefied.pdf")), plot = sources_pcoa, device = "pdf", scale = 1, width = 8, height = 5, units = c("in"), dpi = 300)
+```
+
+## Sourcetracker
+### No read length subsampling
+```{r}
+source_colors <- c(
+  "Modern Calculus" = "#bfaed4",  
+  "Plaque"          = "#3f007d",  
+  "Gut"             = "#c05b16",  
+  "Skin"            = "#fdc187",  
+  "Environment"     = "#7fc97f",  
+  "Unknown"         = "#d9d9d9"   
+)
+
+source_patterns <- c(
+  "Unknown"         = "none",
+  "Environment"     = "stripe",
+  "Skin"            = "stripe",
+  "Gut"             = "stripe",
+  "Plaque"          = "none",
+  #"Modern Calculus" = "crosshatch"
+  "Modern Calculus" = "none"
+)
+
+source_angles <- c(
+  "Unknown"         = 0,
+  "Environment"     = 45,
+  "Skin"            = 135,
+  "Gut"             = 0,
+  "Plaque"          = 0,
+  #"Modern Calculus" = 45
+  "Modern Calculus" = 0
+)
+
+#Prepare SourceTracker Results
+source_results <- fread("./05-results/normalize_kraken/dsvss_npost_no_read_length_sourcetracker_sink_predictions.txt") %>%
+  rename(Sequencing_ID = 1) %>%
+  full_join(., metadata_no_rl)
+
+```
+
+
+```{r}
+library(ggpattern)
+
+sources_plot_no_subsampling_individual_facet <- source_results %>%
+  rename(Environment = environment, Gut = gut, "Modern Calculus" = modern_calc, Plaque = plaque, Skin = skin) %>%
+  gather("Sources", "Percent",2:7) %>%
+  mutate(Percent = Percent * 100) %>%
+  mutate(Sources = fct_relevel(Sources, "Unknown", "Environment", "Skin","Gut","Plaque","Modern Calculus")) %>%
+  ggplot(., aes(x = Strandedness, y = Percent, fill = Sources, pattern = Sources)) +
+          geom_bar_pattern(
+            aes(pattern_angle = Sources),
+            linewidth = .02,
+            stat = "identity",
+            color = "black",
+            #pattern_alpha = 0.45,
+            pattern_fill = NA,
+            pattern_density = 0.03,
+            pattern_spacing = 0.07,
+            pattern_size = 0.15,
+            pattern_key_scale_factor = 0.2) +
+          theme_minimal(base_size = 14) +
+          scale_fill_manual(values = source_colors) +
+          scale_pattern_manual(values = source_patterns) +
+          theme(axis.text.x = element_text(angle = 90, hjust = 1),
+                axis.text = element_text(size = 8)) +
+          geom_hline(yintercept=75, linetype="dotted") +
+          geom_hline(yintercept=90, linetype="dotted", color = "gray50") +
+          #scale_y_continuous(breaks=scales::pretty_breaks(n=6)) +
+          ylab("% attributed to source") +
+          xlab("Individual ID and Strandedness") +
+          facet_wrap(~Individual_ID, ncol = 5) +
+          scale_pattern_angle_manual(values = source_angles)
+
+
+sources_plot_no_subsampling_individual_facet
+
+```
+
+
+### Read length subsampling
+```{r}
+sourcetracker_5M <- fread("./05-results/normalize_kraken/dsvss_npost_no_read_length_sourcetracker_sink_predictions.txt")
+
+sourcetracker_5M_over50bp <- fread("./05-results/normalize_kraken/dsvss_npost_over50bp_sourcetracker_sink_predictions.txt")
+
+sourcetracker_5M_under50bp <- fread("./05-results/normalize_kraken/dsvss_npost_under50bp_sourcetracker_sink_predictions.txt")
+
+sourcetracker_5M_all <- sourcetracker_5M %>%
+  full_join(., sourcetracker_5M_over50bp) %>%
+  full_join(., sourcetracker_5M_under50bp) %>%
+  rename(Sequencing_ID = 1) %>%
+  full_join(., metadata, by = "Sequencing_ID")%>%
+  mutate(Read_length_subsampling = str_replace_all(Read_length_subsampling, "none", "None"),
+         Read_length_subsampling = str_replace_all(Read_length_subsampling, "over50bp", "Over 50 bp"),
+         Read_length_subsampling = str_replace_all(Read_length_subsampling, "under50bp", "Under 50 bp"))
+
+sources_plot_rl_subsampling <- sourcetracker_5M_all %>%
+  rename(Environment = environment, Gut = gut, "Modern Calculus" = modern_calc, Plaque = plaque, Skin = skin) %>%
+  gather("Sources", "Percent",2:7) %>%
+  mutate(Percent = Percent * 100) %>%
+  mutate(Sources = fct_relevel(Sources, "Unknown", "Environment", "Skin","Gut","Plaque","Modern Calculus")) %>%
+  ggplot(., aes(x = Read_length_subsampling, y = Percent, fill = Sources, pattern = Sources)) +
+          geom_bar_pattern(
+            aes(pattern_angle = Sources),
+            linewidth = .02,
+            stat = "identity",
+            color = "black",
+            #pattern_alpha = 0.45,
+            pattern_fill = NA,
+            pattern_density = 0.03,
+            pattern_spacing = 0.07,
+            pattern_size = 0.15,
+            pattern_key_scale_factor = 0.2) +
+          theme_minimal(base_size = 14) +
+          scale_fill_manual(values = source_colors) +
+          scale_pattern_manual(values = source_patterns) +
+          theme(axis.text.x = element_text(angle = 90, hjust = 1),
+                axis.text = element_text(size = 8)) +
+          geom_hline(yintercept=75, linetype="dotted") +
+          geom_hline(yintercept=90, linetype="dotted", color = "gray50") +
+          #scale_y_continuous(breaks=scales::pretty_breaks(n=6)) +
+          ylab("% attributed to source") +
+          xlab("Individual ID and Strandedness") +
+          facet_grid(Strandedness~Individual_ID) +
+          scale_pattern_angle_manual(values = source_angles)
+
+sources_plot_rl_subsampling
+
+#ggsave(file.path("./06-publication", paste0(folder), paste0("SI_Fig6B_", file_modifier, "_rl_subsampling_kraken2_sourcetracker_IndividualID_facet_edited.pdf")), plot = sources_plot_rl_subsampling, device = "pdf", scale = 1, width = 10, height = 6, units = c("in"), dpi = 300)
+
+```
+
+
+#Beta diversity - Read length subsampling
+## Total species PCA
+```{r}
+kraken2_total_species_table_rl <- kraken2_total_species_rl %>%
+  pivot_longer(!Species, names_to = "Sequencing_ID", values_to = "Counts") %>%
+  mutate(Counts = Counts + 1) %>%
+  pivot_wider(names_from = "Species", values_from = "Counts") %>%
+  filter(!str_detect(Sequencing_ID, "Isolation_Source")) %>%
+  column_to_rownames("Sequencing_ID")
+  
+result.pca.kraken2_rl <- pca(kraken2_total_species_table_rl, logratio = "CLR") 
+
+exp_var <- paste0(round(result.pca.kraken2_rl$prop_expl_var$X * 100, 2), "%") # explained variance for x- and y-labels
+
+plotIndiv(result.pca.kraken2_rl)
+
+pca_kraken2_rl <- result.pca.kraken2_rl$variates %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  dplyr::rename(Sequencing_ID = 1,
+         PC1 = 2,
+         PC2 = 3) %>%
+  full_join(., metadata_rl, by = "Sequencing_ID")
+
+permanova_dist_matrix <- dist(pca_kraken2_rl[, c("PC1", "PC2")], method = "euclidean")
+adonis_result <- adonis2(permanova_dist_matrix ~ subsampling, data = pca_kraken2_rl) #Strandedness, Individual_ID, subsampling
+r_squared_value <- adonis_result$R2[1] 
+p_value <- adonis_result$`Pr(>F)`[1]
+p_value_formatted <- ifelse(p_value < 0.001, "< 0.001",
+                            as.character(signif(p_value, digits = 2)))
+r_squared_value_formatted <- ifelse(r_squared_value < 0.001, "< 0.001",
+                            as.character(signif(r_squared_value, digits = 2)))
+
+
+#keep color for strandedness, and change shape for preservation 
+color <- c(double_color, single_color)
+
+
+kraken2_pca_strandedness_rl <- pca_kraken2_rl %>%
+  mutate(subsampling = str_replace(subsampling, "5M_over50bp", "Over 50 bp"),
+         subsampling = str_replace(subsampling, "5M_under50bp", "Under 50 bp")) %>%
+  mutate(subsampling = factor(subsampling, levels = c("Under 50 bp", "Over 50 bp"))) %>%
+  ggplot(., aes(x = PC1, y = PC2, color = Strandedness)) +
+    geom_point(aes(shape = subsampling), size = 3) +
+    theme_minimal() +
+    labs(title = "", y = paste("PC2", " - ", exp_var[2]), x = paste("PC1", " - ", exp_var[1])) +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    scale_color_discrete(name = "Strandedness", labels = c("Double", "Single")) +
+    scale_shape_discrete(name = "Read length subsampling", labels = c("Under 50 bp", "Over 50 bp")) +
+    geom_line(aes(group = Individual_ID), color = "#555555ff", linetype = "dashed") +
+    scale_colour_manual(name = "Strandedness", values = color) +
+    scale_shape_manual(name = "Read length subsampling", values = c(16, 17)) +
+    theme(axis.text.x = element_text(size = 12),  
+          axis.text.y = element_text(size = 12),
+          strip.text = element_text(size = 12),
+          legend.title = element_text(size = 12),
+          legend.text = element_text(size = 12),
+          axis.title.x = element_text(size = 12),
+          axis.title.y = element_text(size = 12)) +
+    geom_text_repel(data = subset(pca_kraken2_rl, Strandedness == "Double"), 
+                          aes(label = Individual_ID), 
+                          size = 3, color = "black", segment.color = NA,
+                          nudge_y = -0.8) +
+      coord_equal() +
+    annotate("text", x =30, y = -25,
+           label = paste("R2 =", r_squared_value_formatted,
+                         "\np-value =", p_value_formatted))
+ 
+kraken2_pca_strandedness_rl
+
+
+```
+
+
+## Total species PCA biplot
+```{r}
+#Define colors and shapes for plotting
+Strandedness_colors <- c("Double" = double_color, "Single" = single_color)
+subsampling_shapes <- c("Under 50 bp" = 16, "Over 50 bp" = 17)
+
+#Biplot Function
+plot_pca_bi_rl <- function(df, pc1, pc2, metadata_group1, metadata_group2, columntitle) {
+    metadata_group_colors <- get(paste(metadata_group1, "_colors", sep = ""))
+    metadata_group_shapes <- get(paste(metadata_group2, "_shapes", sep = ""))
+   
+    arrow_pc <- enquo(columntitle)
+    
+    exp_var <- paste0(round(df$prop_expl_var$X * 100, 2), "%") # explained variance for x- and y-labels
+    
+    # select only the PCs from the PCA and add metadata
+    df_X <- df$variates$X %>%
+              as.data.frame() %>%
+              rownames_to_column("Sequencing_ID") %>%
+              inner_join(metadata_rl, by = "Sequencing_ID") %>%
+              mutate(subsampling = str_replace_all(subsampling, "5M_over50bp", "Over 50 bp"),
+                     subsampling = str_replace_all(subsampling, "5M_under50bp", "Under 50 bp"))
+    
+    metadata_group1 = df_X[[metadata_group1]]
+    metadata_group2 = df_X[[metadata_group2]]
+    
+    corr_lam <- df$sdev[c("PC1", "PC2")] * sqrt(nrow(df_X))
+
+    df_X <- df_X %>%
+      mutate(PC1 = PC1 / corr_lam[1],
+             PC2 = PC2 / corr_lam[2])
+
+    # select the correct PC column and explained variance for PC1
+    if (pc1 == 'PC1') {
+        Pc1 <- df_X$PC1
+        exp_var_pc1 <- exp_var[1]
+        xaxis <- c("PC1")
+    } else if (pc1 == 'PC2') {
+        Pc1 <- df_X$PC2
+        exp_var_pc1 <- exp_var[2]
+        xaxis <- c("PC2")
+    } 
+    
+    # select the correct PC column and explained variance for PC2
+    if (pc2 == 'PC1') {
+        Pc2 <- df_X$PC1
+        exp_var_pc2 <- exp_var[1]
+        yaxis <- c("PC1")
+ } else if (pc2 == 'PC2') {
+       Pc2 <- df_X$PC2
+       exp_var_pc2 <- exp_var[2]
+       yaxis <- c("PC2")
+    }
+    
+      # Identify the 10 pathways that have highest positive and negative loadings in the selected PC
+    pws_10 <- df$loadings$X %>%
+      as.data.frame(.) %>%
+      rownames_to_column(var = "Taxon") %>%
+      top_n(10, !!arrow_pc) %>%
+      arrange(desc(!!arrow_pc)) %>%   #sort by size of loading to get strongest first
+      mutate(label = row_number())
+
+    neg_10 <- df$loadings$X %>%
+      as.data.frame(.) %>%
+      rownames_to_column(var = "Taxon") %>%
+      top_n(-10, !!arrow_pc) %>%
+      arrange(!!arrow_pc) %>%  #sort to get the smallest (most negative/strongest) first
+      mutate(label = row_number())
+
+    pca_plot_bi <- df_X %>%
+      mutate(metadata_group2 = factor(metadata_group2, levels = c("Under 50 bp", "Over 50 bp"))) %>%
+      ggplot(., aes(x = Pc1, y = Pc2, color = metadata_group1)) +
+      geom_point(size = 2.5, aes(shape = metadata_group2) )+
+      geom_segment(data = pws_10,
+                   aes(xend = get(paste(pc1)), yend = get(paste(pc2))),
+                   x = 0, y = 0, colour = "black",
+                   size = 0.3,
+                   arrow = arrow(length = unit(0.03, "npc"))) +
+      #geom_label_repel(data = pws_10,
+      #             aes(x = get(paste(pc1)), y = get(paste(pc2)), label = label), #using label instead of taxon
+      #             size = 2, 
+      #             colour = "black",
+      #             label.padding = 0.1, 
+      #             box.padding = 0.1, #
+      #             point.padding = 0.1, 
+      #             force = 10,
+      #             max.overlaps = Inf) + 
+      geom_segment(data = neg_10,
+                   aes(xend = get(paste(pc1)), yend = get(paste(pc2))),
+                   x = 0, y = 0, colour = "grey50",
+                   size = 0.3,
+                   arrow = arrow(length = unit(0.03, "npc"))) +
+      #geom_label_repel(data = neg_10,
+      #             aes(x = get(paste(pc1)), y = get(paste(pc2)), label = label), #using label instead of taxon
+      #             size = 2, 
+      #             colour = "red",
+      #             label.padding = 0.1, 
+      #             box.padding = 0.1, 
+      #             point.padding = 0.1, 
+      #             force = 10, 
+      #             max.overlaps = Inf) + 
+      labs(x = paste(xaxis, " - ", exp_var_pc1),
+           y = paste(yaxis, " - ", exp_var_pc2),
+           color = "Strandedness",
+           shape = "Read length subsampling") +
+      scale_color_manual(values = metadata_group_colors) +
+      scale_shape_manual(values = metadata_group_shapes) +
+      theme_minimal() + theme(text = element_text(size = 16)) +
+      theme(text = element_text(size=16)) +
+      theme(legend.position = "bottom") +
+      geom_line(aes(group = Individual_ID), color = "#555555ff", linetype = "dashed") +
+      geom_text_repel(aes(label = Individual_ID), color = "black", segment.color = NA) +
+      coord_equal() +
+      coord_equal()
+      
+
+    return(pca_plot_bi) #pca_plot_bi, pws_10, or neg_10
+}
+
+pca_kraken2_biplot_PC1_rl <- plot_pca_bi_rl(result.pca.kraken2_rl, "PC1", "PC2", "Strandedness", "subsampling", PC1)
+pca_kraken2_biplot_PC2_rl <- plot_pca_bi_rl(result.pca.kraken2_rl, "PC1", "PC2", "Strandedness", "subsampling", PC2)
+
+pca_kraken2_biplot_PC1_rl
+pca_kraken2_biplot_PC2_rl
+
+pca_biplots_combined_rl <- ggarrange(
+  pca_kraken2_biplot_PC1_rl, pca_kraken2_biplot_PC2_rl, 
+  labels = c("A", "B"), 
+  ncol = 1, nrow = 2, 
+  common.legend = TRUE, 
+  legend = "bottom")
+
+pca_biplots_combined_rl
+
+#ggsave(file.path("./06-publication", paste0(folder), paste0("SI_Fig28AB_", file_modifier, "_rl_subsampling_kraken2_pca_biplot_combined_PCs_total_species.pdf")) , plot = pca_biplots_combined_rl, device = "pdf", scale = 1, width = 8, height = 12, units = c("in"), dpi = 300)
+
+```
+
+
+## Oral species PCA
+
+```{r}
+kraken2_oral_species_table_rl <- fread("./05-results/normalize_kraken/dsvss_npost_kraken2_gtdb207_rl_oral_species_decontam_filtered.tsv", header = TRUE) 
+
+kraken2_oral_species_rl <- kraken2_oral_species_table_rl %>%
+  pivot_longer(!Species, names_to = "Sequencing_ID", values_to = "Counts") %>%
+  mutate(Counts = Counts + 1) %>%
+  pivot_wider(names_from = "Species", values_from = "Counts") %>%
+  filter(!str_detect(Sequencing_ID, "Isolation_Source")) %>%
+  column_to_rownames("Sequencing_ID")
+  
+result.pca.kraken2_rl <- pca(kraken2_oral_species_rl, logratio = "CLR") 
+
+exp_var <- paste0(round(result.pca.kraken2_rl$prop_expl_var$X * 100, 2), "%") # explained variance for x- and y-labels
+
+pca_kraken2_rl <- result.pca.kraken2_rl$variates %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  dplyr::rename(Sequencing_ID = 1,
+         PC1 = 2,
+         PC2 = 3) %>%
+  full_join(., metadata_rl, by = "Sequencing_ID")
+
+#Create a metadata file with sample IDs, grouping info, and PCA scores
+permanova_data_rl <- pca_kraken2_rl %>%
+  dplyr::select(Sequencing_ID, Individual_ID, PC1, PC2, Strandedness, subsampling) %>%
+  column_to_rownames("Sequencing_ID")
+
+#Create a distance matrix of just PCA scores
+permanova_dist_matrix_rl <- dist(permanova_data_rl[, c("PC1", "PC2")], method = "euclidean")
+
+#Run adonis2
+adonis_result <- adonis2(permanova_dist_matrix_rl ~ subsampling, data = permanova_data_rl) #Strandedness, Individual_ID, subsampling
+
+r_squared_value <- adonis_result$R2[1] 
+  
+p_value <- adonis_result$`Pr(>F)`[1]
+
+p_value_formatted <- ifelse(p_value < 0.001, "< 0.001",
+                            as.character(signif(p_value, digits = 2)))
+
+r_squared_value_formatted <- ifelse(r_squared_value < 0.001, "< 0.001",
+                            as.character(signif(r_squared_value, digits = 2)))
+
+#keep color for strandedness, and change shape for preservation 
+color <- c(double_color, single_color)
+
+kraken2_pca_oral_rl <- pca_kraken2_rl %>%
+   mutate(subsampling = str_replace(subsampling, "5M_over50bp", "Over 50 bp"),
+         subsampling = str_replace(subsampling, "5M_under50bp", "Under 50 bp")) %>%
+  mutate(subsampling = factor(subsampling, levels = c("Under 50 bp", "Over 50 bp"))) %>%
+  ggplot(., aes(x = PC1, y = PC2, color = Strandedness)) +
+    geom_point(aes(shape = subsampling), size = 3) +
+    theme_minimal() +
+    labs(title = "", y = paste("PC2", " - ", exp_var[2]), x = paste("PC1", " - ", exp_var[1])) +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    scale_color_discrete(name = "Strandedness", labels = c("Double", "Single")) +
+    scale_shape_discrete(name = "Read length subsampling", labels = c("Under 50 bp", "Over 50 bp")) +
+    geom_line(aes(group = Individual_ID), color = "#555555ff", linetype = "dashed") +
+    scale_colour_manual(name = "Strandedness", values = color) +
+    scale_shape_manual(name = "Read length subsampling", values = c(16, 17)) +
+    theme(axis.text.x = element_text(size = 12),  
+          axis.text.y = element_text(size = 12),
+          strip.text = element_text(size = 12),
+          legend.title = element_text(size = 12),
+          legend.text = element_text(size = 12),
+          axis.title.x = element_text(size = 12),
+          axis.title.y = element_text(size = 12)) +
+    geom_text_repel(data = subset(pca_kraken2_rl, Strandedness == "Double"), 
+                        aes(label = Individual_ID), 
+                        size = 3, color = "black", segment.color = NA,
+                        nudge_y = -0.8) +
+    coord_equal() +
+  annotate("text", x = -11, y = 0,
+           label = paste("R2 =", r_squared_value_formatted,
+                         "\np-value =", p_value_formatted))
+ 
+kraken2_pca_oral_rl
+
+
+```
+
+
+## Oral species PCA biplot
+```{r}
+#Define colors and shapes for plotting
+Strandedness_colors <- c("Double" = double_color, "Single" = single_color)
+subsampling_shapes <- c("Under 50 bp" = 16, "Over 50 bp" = 17)
+
+#Biplot Function
+plot_pca_bi_rl <- function(df, pc1, pc2, metadata_group1, metadata_group2, columntitle) {
+    metadata_group_colors <- get(paste(metadata_group1, "_colors", sep = ""))
+    metadata_group_shapes <- get(paste(metadata_group2, "_shapes", sep = ""))
+   
+    arrow_pc <- enquo(columntitle)
+    
+    exp_var <- paste0(round(df$prop_expl_var$X * 100, 2), "%") # explained variance for x- and y-labels
+    
+    # select only the PCs from the PCA and add metadata
+    df_X <- df$variates$X %>%
+              as.data.frame() %>%
+              rownames_to_column("Sequencing_ID") %>%
+              inner_join(metadata_rl, by = "Sequencing_ID") %>%
+              mutate(subsampling = str_replace_all(subsampling, "5M_over50bp", "Over 50 bp"),
+                     subsampling = str_replace_all(subsampling, "5M_under50bp", "Under 50 bp"))
+    
+    metadata_group1 = df_X[[metadata_group1]]
+    metadata_group2 = df_X[[metadata_group2]]
+    
+    corr_lam <- df$sdev[c("PC1", "PC2")] * sqrt(nrow(df_X))
+
+    df_X <- df_X %>%
+      mutate(PC1 = PC1 / corr_lam[1],
+             PC2 = PC2 / corr_lam[2])
+
+    # select the correct PC column and explained variance for PC1
+    if (pc1 == 'PC1') {
+        Pc1 <- df_X$PC1
+        exp_var_pc1 <- exp_var[1]
+        xaxis <- c("PC1")
+    } else if (pc1 == 'PC2') {
+        Pc1 <- df_X$PC2
+        exp_var_pc1 <- exp_var[2]
+        xaxis <- c("PC2")
+    } 
+    
+    # select the correct PC column and explained variance for PC2
+    if (pc2 == 'PC1') {
+        Pc2 <- df_X$PC1
+        exp_var_pc2 <- exp_var[1]
+        yaxis <- c("PC1")
+ } else if (pc2 == 'PC2') {
+       Pc2 <- df_X$PC2
+       exp_var_pc2 <- exp_var[2]
+       yaxis <- c("PC2")
+    }
+    
+    # Identify the 10 pathways that have highest positive and negative loadings in the selected PC
+    pws_10 <- df$loadings$X %>%
+      as.data.frame(.) %>%
+      rownames_to_column(var = "Taxon") %>%
+      top_n(10, !!arrow_pc) %>%
+      arrange(desc(!!arrow_pc)) %>%   #sort by size of loading to get strongest first
+      mutate(label = row_number())
+
+    neg_10 <- df$loadings$X %>%
+      as.data.frame(.) %>%
+      rownames_to_column(var = "Taxon") %>%
+      top_n(-10, !!arrow_pc) %>%
+      arrange(!!arrow_pc) %>%  #sort to get the smallest (most negative/strongest) first
+      mutate(label = row_number())
+
+    pca_plot_bi <- df_X %>%
+      mutate(metadata_group2 = factor(metadata_group2, levels = c("Under 50 bp", "Over 50 bp"))) %>%
+      ggplot(., aes(x = Pc1, y = Pc2, color = metadata_group1)) +
+      geom_point(size = 2.5, aes(shape = metadata_group2) )+
+      geom_segment(data = pws_10,
+                   aes(xend = get(paste(pc1)), yend = get(paste(pc2))),
+                   x = 0, y = 0, colour = "black",
+                   size = 0.3,
+                   arrow = arrow(length = unit(0.03, "npc"))) +
+      #geom_label_repel(data = pws_10,
+      #             aes(x = get(paste(pc1)), y = get(paste(pc2)), label = label), #using label instead of taxon
+      #             size = 2, 
+      #             colour = "black",
+      #             label.padding = 0.1, 
+      #             box.padding = 0.1, #
+      #             point.padding = 0.1, 
+      #             force = 10,
+      #             max.overlaps = Inf) + 
+      geom_segment(data = neg_10,
+                   aes(xend = get(paste(pc1)), yend = get(paste(pc2))),
+                   x = 0, y = 0, colour = "grey50",
+                   size = 0.3,
+                   arrow = arrow(length = unit(0.03, "npc"))) +
+      #geom_label_repel(data = neg_10,
+      #             aes(x = get(paste(pc1)), y = get(paste(pc2)), label = label), #using label instead of taxon
+      #             size = 2, 
+      #             colour = "red",
+      #             label.padding = 0.1, 
+      #             box.padding = 0.1, 
+      #             point.padding = 0.1, 
+      #             force = 10, 
+      #             max.overlaps = Inf) + 
+      labs(x = paste(xaxis, " - ", exp_var_pc1),
+           y = paste(yaxis, " - ", exp_var_pc2),
+           color = "Strandedness",
+           shape = "Read length subsampling") +
+      scale_color_manual(values = metadata_group_colors) +
+      scale_shape_manual(values = metadata_group_shapes) +
+      theme_minimal() + theme(text = element_text(size = 16)) +
+      theme(text = element_text(size=16)) +
+      theme(legend.position = "bottom") +
+      geom_line(aes(group = Individual_ID), color = "#555555ff", linetype = "dashed") +
+      geom_text_repel(aes(label = Individual_ID), color = "black", segment.color = NA, max.overlaps = 20) +
+      coord_equal()
+      
+
+    return(pca_plot_bi) #pca_plot_bi, pws_10, or neg_10
+}
+
+pca_kraken2_biplot_PC1_rl <- plot_pca_bi_rl(result.pca.kraken2_rl, "PC1", "PC2", "Strandedness", "subsampling", PC1)
+pca_kraken2_biplot_PC2_rl <- plot_pca_bi_rl(result.pca.kraken2_rl, "PC1", "PC2", "Strandedness", "subsampling", PC2)
+
+pca_kraken2_biplot_PC1_rl
+pca_kraken2_biplot_PC2_rl
+
+pca_biplots_combined_rl_oral <- ggarrange(
+  pca_kraken2_biplot_PC1_rl, pca_kraken2_biplot_PC2_rl, 
+  labels = c("A", "B"), 
+  ncol = 1, nrow = 2, 
+  common.legend = TRUE, 
+  legend = "bottom")
+
+pca_biplots_combined_rl_oral
+
+#ggsave(file.path("./06-publication", paste0(folder), paste0("SI_Fig28CD_", file_modifier, "_rl_subsampling_kraken2_pca_biplot_combined_PCs_oral_species.pdf")) , plot = pca_biplots_combined_rl_oral, device = "pdf", scale = 1, width = 8, height = 12, units = c("in"), dpi = 300)
+
+```
+
+
+## Oral species PCA biplot - well-preserved only
+```{r}
+#Filter out BAN001 and FUM003
+kraken2_oral_species_rl <- kraken2_oral_species_table_rl %>%
+  pivot_longer(!Species, names_to = "Sequencing_ID", values_to = "Counts") %>%
+  filter(!str_detect(Sequencing_ID, "BAN001")) %>%
+  filter(!str_detect(Sequencing_ID, "FUM003")) %>%
+  mutate(Counts = Counts + 1) %>%
+  pivot_wider(names_from = "Species", values_from = "Counts") %>%
+  filter(!str_detect(Sequencing_ID, "Isolation_Source")) %>%
+  column_to_rownames("Sequencing_ID")
+  
+result.pca.kraken2_rl <- pca(kraken2_oral_species_rl, logratio = "CLR") 
+
+exp_var <- paste0(round(result.pca.kraken2_rl$prop_expl_var$X * 100, 2), "%") # explained variance for x- and y-labels
+
+pca_kraken2_rl <- result.pca.kraken2_rl$variates %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  dplyr::rename(Sequencing_ID = 1,
+         PC1 = 2,
+         PC2 = 3) %>%
+  inner_join(., metadata_rl, by = "Sequencing_ID")
+
+#Create a metadata file with sample IDs, grouping info, and PCA scores
+permanova_data_rl <- pca_kraken2_rl %>%
+  dplyr::select(Sequencing_ID, Individual_ID, PC1, PC2, Strandedness, subsampling) %>%
+  column_to_rownames("Sequencing_ID")
+
+#Create a distance matrix of just PCA scores
+permanova_dist_matrix_rl <- dist(permanova_data_rl[, c("PC1", "PC2")], method = "euclidean")
+
+#Run adonis2
+adonis_result <- adonis2(permanova_dist_matrix_rl ~ Individual_ID, data = permanova_data_rl) #Strandedness, Individual_ID, subsampling
+
+#Define colors and shapes for plotting
+Strandedness_colors <- c("Double" = double_color, "Single" = single_color)
+subsampling_shapes <- c("Under 50 bp" = 17, "Over 50 bp" = 15)
+
+#Biplot Function
+plot_pca_bi_rl <- function(df, pc1, pc2, metadata_group1, metadata_group2, columntitle) {
+    metadata_group_colors <- get(paste(metadata_group1, "_colors", sep = ""))
+    metadata_group_shapes <- get(paste(metadata_group2, "_shapes", sep = ""))
+   
+    arrow_pc <- enquo(columntitle)
+    
+    exp_var <- paste0(round(df$prop_expl_var$X * 100, 2), "%") # explained variance for x- and y-labels
+    
+    # select only the PCs from the PCA and add metadata
+    df_X <- df$variates$X %>%
+              as.data.frame() %>%
+              rownames_to_column("Sequencing_ID") %>%
+              inner_join(metadata_rl, by = "Sequencing_ID") %>%
+              mutate(subsampling = str_replace_all(subsampling, "5M_over50bp", "Over 50 bp"),
+                     subsampling = str_replace_all(subsampling, "5M_under50bp", "Under 50 bp"))
+    
+    metadata_group1 = df_X[[metadata_group1]]
+    metadata_group2 = df_X[[metadata_group2]]
+    
+    corr_lam <- df$sdev[c("PC1", "PC2")] * sqrt(nrow(df_X))
+
+    df_X <- df_X %>%
+      mutate(PC1 = PC1 / corr_lam[1],
+             PC2 = PC2 / corr_lam[2])
+
+    # select the correct PC column and explained variance for PC1
+    if (pc1 == 'PC1') {
+        Pc1 <- df_X$PC1
+        exp_var_pc1 <- exp_var[1]
+        xaxis <- c("PC1")
+    } else if (pc1 == 'PC2') {
+        Pc1 <- df_X$PC2
+        exp_var_pc1 <- exp_var[2]
+        xaxis <- c("PC2")
+    } 
+    
+    # select the correct PC column and explained variance for PC2
+    if (pc2 == 'PC1') {
+        Pc2 <- df_X$PC1
+        exp_var_pc2 <- exp_var[1]
+        yaxis <- c("PC1")
+ } else if (pc2 == 'PC2') {
+       Pc2 <- df_X$PC2
+       exp_var_pc2 <- exp_var[2]
+       yaxis <- c("PC2")
+    }
+    
+    # Identify the 10 pathways that have highest positive and negative loadings in the selected PC
+    pws_10 <- df$loadings$X %>%
+      as.data.frame(.) %>%
+      rownames_to_column(var = "Taxon") %>%
+      top_n(10, !!arrow_pc) %>%
+      arrange(desc(!!arrow_pc)) %>%   #sort by size of loading to get strongest first
+      mutate(label = row_number())
+
+    neg_10 <- df$loadings$X %>%
+      as.data.frame(.) %>%
+      rownames_to_column(var = "Taxon") %>%
+      top_n(-10, !!arrow_pc) %>%
+      arrange(!!arrow_pc) %>%  #sort to get the smallest (most negative/strongest) first
+      mutate(label = row_number())
+
+    pca_plot_bi <- df_X %>%
+      mutate(metadata_group2 = factor(metadata_group2, levels = c("Under 50 bp", "Over 50 bp"))) %>%
+      ggplot(., aes(x = Pc1, y = Pc2, color = metadata_group1)) +
+      geom_point(size = 2.5, aes(shape = metadata_group2) )+
+      geom_segment(data = pws_10,
+                   aes(xend = get(paste(pc1)), yend = get(paste(pc2))),
+                   x = 0, y = 0, colour = "black",
+                   size = 0.3,
+                   arrow = arrow(length = unit(0.03, "npc"))) +
+      #geom_label_repel(data = pws_10,
+      #             aes(x = get(paste(pc1)), y = get(paste(pc2)), label = label), #using label instead of taxon
+      #             size = 2, 
+      #             colour = "black",
+      #             label.padding = 0.1, 
+      #             box.padding = 0.1, #
+      #             point.padding = 0.1, 
+      #             force = 10,
+      #             max.overlaps = Inf) + 
+      geom_segment(data = neg_10,
+                   aes(xend = get(paste(pc1)), yend = get(paste(pc2))),
+                   x = 0, y = 0, colour = "grey50",
+                   size = 0.3,
+                   arrow = arrow(length = unit(0.03, "npc"))) +
+      #geom_label_repel(data = neg_10,
+      #             aes(x = get(paste(pc1)), y = get(paste(pc2)), label = label), #using label instead of taxon
+      #             size = 2, 
+      #             colour = "red",
+      #             label.padding = 0.1, 
+      #             box.padding = 0.1, 
+      #             point.padding = 0.1, 
+      #             force = 10, 
+      #             max.overlaps = Inf) + 
+      labs(x = paste(xaxis, " - ", exp_var_pc1),
+           y = paste(yaxis, " - ", exp_var_pc2),
+           color = "Strandedness",
+           shape = "Read length subsampling") +
+      scale_color_manual(values = metadata_group_colors) +
+      scale_shape_manual(values = metadata_group_shapes) +
+      theme_minimal() + theme(text = element_text(size = 16)) +
+      theme(text = element_text(size=16)) +
+      theme(legend.position = "bottom") +
+      geom_line(aes(group = Individual_ID), color = "#555555ff", linetype = "dashed") +
+      geom_text_repel(aes(label = Individual_ID), color = "black", segment.color = NA, max.overlaps = 20) +
+      coord_equal()
+      
+
+    return(pca_plot_bi) #pca_plot_bi, pws_10, or neg_10
+}
+
+pca_kraken2_biplot_PC1_rl <- plot_pca_bi_rl(result.pca.kraken2_rl, "PC1", "PC2", "Strandedness", "subsampling", PC1)
+pca_kraken2_biplot_PC2_rl <- plot_pca_bi_rl(result.pca.kraken2_rl, "PC1", "PC2", "Strandedness", "subsampling", PC2)
+
+pca_kraken2_biplot_PC1_rl
+pca_kraken2_biplot_PC2_rl
+
+pca_biplots_combined_rl_oral <- ggarrange(
+  pca_kraken2_biplot_PC1_rl, pca_kraken2_biplot_PC2_rl, 
+  labels = c("A", "B"), 
+  ncol = 1, nrow = 2, 
+  common.legend = TRUE, 
+  legend = "bottom")
+
+pca_biplots_combined_rl_oral
+
+#ggsave(file.path("./06-publication", paste0(folder), paste0("SI_Fig28EF_", file_modifier, "_rl_subsampling_kraken2_pca_biplot_combined_PCs_oral_species_well_preserved.pdf")) , plot = pca_biplots_combined_rl_oral, device = "pdf", scale = 1, width = 8, height = 12, units = c("in"), dpi = 300)
+
+```
+
+
+## Sources PCoA
+```{r}
+#Convert to a phyloseq object to rarefy the table before creating the PCoA
+
+combined_kraken2_species_rl <- full_join(kraken2_total_species_rl, kraken2_sources_filtered, by = "Species") %>%
+  mutate(across(everything(), ~ replace_na(.x, 0)))
+
+#Make the species column rownames
+combined_kraken2_species_formatted <- combined_kraken2_species_rl %>%
+  select(-ERR1883424, -ERR1883437) %>% # filter out samples with a species sum of 0 after filtering
+  column_to_rownames("Species")
+
+#Convert the species table to a matrix
+species_matrix <- as.matrix(combined_kraken2_species_formatted)
+
+#Convert the matrix to a phyloseq object
+ps <- phyloseq(otu_table(species_matrix, taxa_are_rows=TRUE))
+
+#Format metadata correctly
+mapfile <- fread("./05-results/normalize_kraken/dsvss_npost_source_tracker_mappingfile_complete.tsv") %>%
+  dplyr::rename(Sequencing_ID = 1) %>%
+  dplyr::select(Sequencing_ID, Study, Env, SourceSink) %>%
+  filter(!str_ends(Sequencing_ID, "5M"))
+
+metadata_full <- metadata_rl %>%
+  full_join(., mapfile) %>%
+  mutate(Control_or_Sample = case_when(grepl("source", SourceSink) ~ "Control", TRUE ~ "Sample")) 
+
+metadata_formatted <- metadata_full %>%
+  dplyr::rename(SampleID = Sequencing_ID) %>%
+  column_to_rownames("SampleID")
+
+#Convert metadata to a phyloseq object
+sample_data_obj <- sample_data(metadata_formatted)
+
+#Add the metadata to the phyloseq object
+ps <- merge_phyloseq(ps, sample_data_obj)
+
+#Rarefy the species table
+#Extract the sample data as a data frame
+species_table <- otu_table(ps)
+sample_sums <- sample_sums(species_table)
+
+#Find the minimum sample sum
+min_sample_sum <- min(sample_sums)
+
+#Rarefy
+physeq_rarefied <- rarefy_even_depth(species_table, sample.size = min_sample_sum, rngseed = 1)
+
+#Convert to distance matrix (Jaccard dissimilarity)
+physeq_rarefied_formatted <- as.data.frame(physeq_rarefied)
+
+physeq_rarefied_formatted <- physeq_rarefied_formatted %>%
+  rownames_to_column("Species") %>%
+  pivot_longer(2:ncol(.), names_to = "SampleID", values_to = "counts") %>%
+  pivot_wider(names_from = "Species", values_from = "counts") %>%
+  arrange(SampleID) %>%
+  column_to_rownames("SampleID") 
+
+dist_matrix <- vegdist(physeq_rarefied_formatted, method = "jaccard")
+
+#PCoA Calculation
+pcoa_result <- ape::pcoa(dist_matrix)
+pcoa_coordinates <- pcoa_result$vectors[, 1:2]
+colnames(pcoa_coordinates) <- c("PCoA1", "PCoA2")
+
+#Combine PCoA coordinates with metadata
+pcoa_df <- as.data.frame(pcoa_coordinates)
+pcoa_df$Sequencing_ID <- rownames(pcoa_df)
+pcoa_df <- merge(pcoa_df, metadata_full, by = "Sequencing_ID")
+
+#Variation explained by each axis
+eig_values <- pcoa_result$values$Relative_eig
+var_explained <- round(eig_values[1:2] * 100, digits = 2)
+x_lab <- paste0("PCoA1 - ", round(var_explained[1], 2), "%")
+y_lab <- paste0("PCoA2 - ", round(var_explained[1], 2), "%")
+
+#Permanova
+adonis_result <- adonis2(dist_matrix ~ Env, data = pcoa_df)
+
+r_squared_value <- adonis_result$R2[1] 
+p_value <- adonis_result$`Pr(>F)`[1]
+p_value_formatted <- ifelse(p_value < 0.001, "< 0.001",
+                            as.character(signif(p_value, digits = 2)))
+r_squared_value_formatted <- ifelse(r_squared_value < 0.001, "< 0.001",
+                            as.character(signif(r_squared_value, digits = 2)))
+
+#Define colors, shapes, and plot
+
+colors <- c("Ancient Calculus - ssLib" = single_color, "Ancient Calculus - dsLib" = double_color,
+  "Modern Calculus" = "#bfaed4",  
+  "Plaque"          = "#3f007d",  
+  "Gut"             = "#c05b16",  
+  "Skin"            = "#fdc187",  
+  "Environment"     = "#7fc97f",  
+  "Unknown"         = "#d9d9d9"   
+)
+
+shapes <- c("Source" = 16, "Over 50 bp" = 15, "Under 50 bp" = 17)
+
+sources_pcoa_rl <- pcoa_df %>%
+  mutate(Env = str_replace_all(Env, "calculus", "Ancient Calculus"),
+         Env = str_replace_all(Env, "environment", "Environment"),
+         Env = str_replace_all(Env, "modern_calc", "Modern Calculus"),
+         Env = str_replace_all(Env, "skin", "Skin"),
+         Env = str_replace_all(Env, "gut", "Gut"),
+         Env = str_replace_all(Env, "plaque", "Plaque")) %>%
+  mutate(Env = case_when(Strandedness == "Single" ~ "Ancient Calculus - ssLib", TRUE ~ Env)) %>%
+  mutate(Env = case_when(Strandedness == "Double" ~ "Ancient Calculus - dsLib", TRUE ~ Env)) %>%
+  mutate(SourceSink = str_replace_all(SourceSink, "source", "Source")) %>%
+  mutate(subsampling = replace_na(subsampling, "Source")) %>%
+  mutate(SourceSink = ifelse(str_detect(subsampling, "5M_under50bp"), "Under 50 bp", SourceSink),
+         SourceSink = ifelse(str_detect(subsampling, "5M_over50bp"), "Over 50 bp", SourceSink)) %>%
+  mutate(Individual_ID = case_when(is.na(Individual_ID) ~ Library_ID, TRUE ~ Individual_ID)) %>%
+  mutate(Strandedness = case_when(is.na(Strandedness) ~ "Source", TRUE ~ Strandedness)) %>%
+  mutate(Env = factor(Env, levels = c("Ancient Calculus - dsLib", "Ancient Calculus - ssLib", "Modern Calculus", "Plaque", "Gut", "Skin", "Environment"))) %>%
+  mutate(SourceSink = factor(SourceSink, levels = c("Under 50 bp", "Over 50 bp", "Source"))) %>%
+  ggplot(., aes(x = PCoA1, y = PCoA2, color = Env, shape = SourceSink)) +
+    geom_point(aes(alpha = Control_or_Sample), size = 2.5) +
+    theme_minimal() +
+    labs(title = "") +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    scale_color_manual(name = "Environment", values = colors) +
+    scale_shape_manual(name = "Sample", values = shapes) +
+    #geom_line(aes(group = Individual_ID), color = "#CCCCCC", linetype = "dashed") +
+    theme(axis.text.x = element_text(size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14)) +
+  scale_alpha_manual(values = c("Control" = 0.7, "Sample" = 1)) +
+  xlab(x_lab) +
+  ylab(y_lab) +
+  guides(alpha = "none") +
+  geom_line(data = pcoa_df %>% filter(!is.na(Individual_ID)), 
+              aes(group = Individual_ID), 
+              color = "#CCCCCC", 
+              linetype = "dashed") +
+  geom_text(data = pcoa_df %>% filter(Strandedness %in% c("Single")), 
+              aes(label = Individual_ID), 
+              hjust = -0.3, 
+              vjust = -0.3, 
+              size = 3, color = "black") +
+  coord_equal() +
+  annotate("text", x = -0.3, y =  -0.1,
+           label = paste("R2 =", r_squared_value_formatted,
+                         "\np-value =", p_value_formatted))
+
+sources_pcoa_rl
+
+```
+
+
+# Well-preserved total species samples
+```{r}
+#Fill in data for total oral species v. filtered oral species w/ no contam
+kraken2_total_species_no_rl <- fread("./05-results/normalize_kraken/dsvss_npost_kraken2_gtdb207_total_species_decontam_filtered_no_rl.tsv", header = TRUE) 
+
+data <- kraken2_total_species_no_rl #select the oral set to use
+
+metadata <- fread("./05-results/normalize_kraken/dsvss_npost_w_rl_subsampling_metadata.tsv") 
+
+metadata_no_rl <- metadata %>%
+  filter(Read_length_subsampling == "none")
+```
+
+
+```{r}
+kraken2_oral_species_no_rl_filtered <- data %>%
+  pivot_longer(!Species, names_to = "Sequencing_ID", values_to = "Counts") %>%
+  filter(!str_detect(Sequencing_ID, "BAN001")) %>%
+  filter(!str_detect(Sequencing_ID, "FUM003")) %>%
+  mutate(Counts = Counts + 1) %>%
+  pivot_wider(names_from = "Species", values_from = "Counts") %>%
+  filter(!str_detect(Sequencing_ID, "Isolation_Source")) %>%
+  column_to_rownames("Sequencing_ID")
+  
+result.pca.kraken2_no_rl_filtered <- pca(kraken2_oral_species_no_rl_filtered, logratio = "CLR") 
+
+exp_var <- paste0(round(result.pca.kraken2_no_rl_filtered$prop_expl_var$X * 100, 2), "%") # explained variance for x- and y-labels
+
+pca_kraken2_no_rl_filtered <- result.pca.kraken2_no_rl_filtered$variates %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  dplyr::rename(Sequencing_ID = 1,
+         PC1 = 2,
+         PC2 = 3) %>%
+  inner_join(., metadata_no_rl, by = "Sequencing_ID")
+```
+
+Perform a PERMANOVA (Permutational Multivariate Analysis of Variance) test using the adonis2 function from the vegan package
+```{r}
+#Create a metadata file with sample IDs, grouping info, and PCA scores
+permanova_data_no_rl_filtered <- pca_kraken2_no_rl_filtered %>%
+  dplyr::select(Sequencing_ID, Individual_ID, PC1, PC2, Strandedness, kraken2_preservation) %>%
+  column_to_rownames("Sequencing_ID")
+
+#Create a distance matrix of just PCA scores
+permanova_dist_matrix_no_rl_filtered <- dist(permanova_data_no_rl_filtered[, c("PC1", "PC2")], method = "euclidean")
+
+#Run adonis2
+adonis_result <- adonis2(permanova_dist_matrix_no_rl_filtered ~ Strandedness, data = permanova_data_no_rl_filtered) #Strandedness, Individual_ID
+
+r_squared_value <- adonis_result$R2[1] 
+  
+p_value <- adonis_result$`Pr(>F)`[1]
+
+p_value_formatted <- ifelse(p_value < 0.001, "< 0.001",
+                            as.character(signif(p_value, digits = 2)))
+
+r_squared_value_formatted <- ifelse(r_squared_value < 0.001, "< 0.001",
+                            as.character(signif(r_squared_value, digits = 2)))
+```
+
+
+
+
+```{r}
+#Metadata table (will be added w/in the function)
+full_metadata <- fread("./05-results/normalize_kraken/dsvss_npost_w_rl_subsampling_metadata.tsv") %>%
+  filter(Read_length_subsampling == "none") %>%
+  dplyr::select(Sequencing_ID, Strandedness, kraken2_preservation, Individual_ID)
+
+#Define colors and shapes for plotting
+Strandedness_colors <- c("Double" = double_color, "Single" = single_color)
+kraken2_preservation_shapes <- c("Good" = 16, "Bad" = 17)
+
+#Biplot Function
+plot_pca_bi <- function(df, pc1, pc2, metadata_group1, metadata_group2, columntitle) {
+    metadata_group_colors <- get(paste(metadata_group1, "_colors", sep = ""))
+    metadata_group_shapes <- get(paste(metadata_group2, "_shapes", sep = ""))
+   
+    arrow_pc <- enquo(columntitle)
+    
+    exp_var <- paste0(round(df$prop_expl_var$X * 100, 2), "%") # explained variance for x- and y-labels
+    
+    # select only the PCs from the PCA and add metadata
+    df_X <- df$variates$X %>%
+              as.data.frame() %>%
+              rownames_to_column("Sequencing_ID") %>%
+              inner_join(full_metadata, by = "Sequencing_ID")
+    
+    metadata_group1 = df_X[[metadata_group1]]
+    metadata_group2 = df_X[[metadata_group2]]
+    
+    corr_lam <- df$sdev[c("PC1", "PC2")] * sqrt(nrow(df_X))
+
+    df_X <- df_X %>%
+      mutate(PC1 = PC1 / corr_lam[1],
+             PC2 = PC2 / corr_lam[2])
+
+    # select the correct PC column and explained variance for PC1
+    if (pc1 == 'PC1') {
+        Pc1 <- df_X$PC1
+        exp_var_pc1 <- exp_var[1]
+        xaxis <- c("PC1")
+    } else if (pc1 == 'PC2') {
+        Pc1 <- df_X$PC2
+        exp_var_pc1 <- exp_var[2]
+        xaxis <- c("PC2")
+    } 
+    
+    # select the correct PC column and explained variance for PC2
+    if (pc2 == 'PC1') {
+        Pc2 <- df_X$PC1
+        exp_var_pc2 <- exp_var[1]
+        yaxis <- c("PC1")
+ } else if (pc2 == 'PC2') {
+       Pc2 <- df_X$PC2
+       exp_var_pc2 <- exp_var[2]
+       yaxis <- c("PC2")
+    }
+    
+    # Identify the 10 pathways that have highest positive and negative loadings in the selected PC
+    pws_10 <- df$loadings$X %>%
+      as.data.frame(.) %>%
+      rownames_to_column(var = "Taxon") %>%
+      top_n(10, !!arrow_pc) %>%
+      arrange(desc(!!arrow_pc)) %>%   #sort by size of loading to get strongest first
+      mutate(label = row_number())
+
+    neg_10 <- df$loadings$X %>%
+      as.data.frame(.) %>%
+      rownames_to_column(var = "Taxon") %>%
+      top_n(-10, !!arrow_pc) %>%
+      arrange(!!arrow_pc) %>%  #sort to get the smallest (most negative/strongest) first
+      mutate(label = row_number())
+
+    pca_plot_bi <- df_X %>%
+      mutate(metadata_group2 = factor(metadata_group2, levels = c("Good", "Bad"))) %>%
+      ggplot(., aes(x = Pc1, y = Pc2, color = metadata_group1)) +
+      geom_point(size = 4, aes(shape = metadata_group2) )+
+      geom_segment(data = pws_10,
+                   aes(xend = get(paste(pc1)), yend = get(paste(pc2))),
+                   x = 0, y = 0, colour = "black",
+                   size = 0.3,
+                   arrow = arrow(length = unit(0.03, "npc"))) +
+      #geom_label_repel(data = pws_10,
+      #             aes(x = get(paste(pc1)), y = get(paste(pc2)), label = label), #using label instead of taxon
+      #             size = 2, 
+      #             colour = "black",
+      #             label.padding = 0.1, 
+      #             box.padding = 0.1, #
+      #             point.padding = 0.1, 
+      #             force = 10,
+      #             max.overlaps = Inf) + 
+      geom_segment(data = neg_10,
+                   aes(xend = get(paste(pc1)), yend = get(paste(pc2))),
+                   x = 0, y = 0, colour = "grey",
+                   size = 0.3,
+                   arrow = arrow(length = unit(0.03, "npc"))) +
+      #geom_label_repel(data = neg_10,
+      #             aes(x = get(paste(pc1)), y = get(paste(pc2)), label = label), #using label instead of taxon
+      #             size = 2, 
+      #             colour = "red",
+      #             label.padding = 0.1, 
+      #             box.padding = 0.1, 
+      #             point.padding = 0.1, 
+      #             force = 10, 
+      #             max.overlaps = Inf) + 
+      labs(x = paste(xaxis, " - ", exp_var_pc1),
+           y = paste(yaxis, " - ", exp_var_pc2),
+           color = "Strandedness",
+           shape = "Preservation") +
+      scale_color_manual(values = metadata_group_colors) +
+      scale_shape_manual(values = metadata_group_shapes) +
+      theme_minimal() + theme(text = element_text(size = 16)) +
+      theme(text = element_text(size=16)) +
+      theme(legend.position = "bottom") +
+      geom_line(aes(group = Individual_ID), color = "#CCCCCC", linetype = "dashed") +
+      geom_text_repel(aes(label = Individual_ID), color = "black", segment.color = NA) +
+      coord_equal()
+      
+
+    return(pca_plot_bi) #pca_plot_bi, pws_10, neg_10
+}
+
+pca_kraken2_biplot_PC1_filtered <- plot_pca_bi(result.pca.kraken2_no_rl_filtered, "PC1", "PC2", "Strandedness", "kraken2_preservation", PC1)
+pca_kraken2_biplot_PC2_filtered <- plot_pca_bi(result.pca.kraken2_no_rl_filtered, "PC1", "PC2", "Strandedness", "kraken2_preservation", PC2)
+
+pca_kraken2_biplot_PC1_filtered
+pca_kraken2_biplot_PC2_filtered
+
+total_pca_biplots_combined_no_rl_well_preserved <- ggarrange(
+  pca_kraken2_biplot_PC1_filtered, pca_kraken2_biplot_PC2_filtered, 
+  labels = c("A", "B"), 
+  ncol = 1, nrow = 2, 
+  common.legend = TRUE, 
+  legend = "bottom")
+
+total_pca_biplots_combined_no_rl_well_preserved
+
+#ggsave(file.path("./06-publication", paste0(folder), paste0("SI_Fig22AB_", file_modifier, "_no_rl_kraken2_pca_biplot_combined_PCs_total_species_decontam_well_preserved_only.pdf")), plot = total_pca_biplots_combined_no_rl_well_preserved, device = "pdf", scale = 1, width = 8, height = 12, units = c("in"), dpi = 300)
+```
+
+betadisper
+```{r}
+#STRANDEDNESS
+#make sure the grouping variable (strandedness) is aligned to the distance matrix rows
+group_strandedness <- permanova_data_no_rl_filtered$Strandedness
+names(group_strandedness) <- rownames(permanova_data_no_rl_filtered)
+
+#distance matrix
+dist <- as.dist(as.matrix(permanova_dist_matrix_no_rl_filtered))
+
+#run betadisper
+bd_strandedness <- betadisper(dist, group = group_strandedness)
+
+#permutation test for homogeneity of dispersion
+bd_perm <- permutest(bd_strandedness, permutations = 999)
+
+#visualize
+#boxplot
+boxplot(bd_strandedness, xlab = "Strandedness", ylab = "Distance to centroid")
+
+bd_df <- data.frame(
+  Sequencing_ID = names(bd_strandedness$distances),
+  Distance = bd_strandedness$distances,
+  Library = bd_strandedness$group)
+
+double_color <- "#04387a"
+single_color <- "#6fbfdc"
+
+colors <- c("#04387a", "#6fbfdc")
+
+wilcox_results <- bd_df %>%
+  wilcox_test(Distance ~ Library, paired = TRUE) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")
+
+effect_size_labels <- bd_df %>%
+  wilcox_effsize(formula = Distance ~ Library, paired = TRUE) %>%
+  mutate(effectsize_cat = case_when(
+    magnitude == "small" ~ "†",     
+    magnitude == "moderate" ~ "††",
+    magnitude == "large" ~ "†††"))
+
+wilcox_results <- wilcox_results %>%
+  left_join(effect_size_labels) %>%
+  mutate(annotation = paste(p.adj.signif, effectsize_cat))
+
+annotations <- wilcox_results %>%
+  summarize(annotation = first(annotation),
+            y_position = 48, .groups = 'drop')
+
+library_centroid_distance_boxplot <- bd_df %>%
+  inner_join(., metadata_no_rl %>%
+               select(Sequencing_ID, Individual_ID)) %>%
+  mutate(Library = str_replace_all(Library, "Double", "dsLib"),
+         Library = str_replace_all(Library, "Single", "ssLib")) %>%
+  ggplot(., aes(x = Library, y = Distance)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.075, size = 4, aes(color = Library)) +
+  scale_color_manual(values = c("dsLib" = "#04387a", "ssLib" = "#6fbfdc")) +
+  labs(
+    x = "Strandedness",
+    y = "Distance to centroid",
+    title = ""
+  ) +
+  theme_classic() +
+  theme(axis.text.x = element_text( size = 12), 
+          axis.text.y = element_text(size = 12), 
+          axis.title = element_text(size = 14),  
+          legend.text = element_text(size = 12),  
+          legend.title = element_text(size = 14),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank()) +
+  geom_line(aes(group = Individual_ID), linetype = "dashed", color = "#555555", linewidth = 0.2) +
+  geom_text_repel(aes(label = Individual_ID), size = 3) +
+  geom_text(data = annotations, aes(x = 1.5, y = y_position, label = annotation), vjust = -0.5, size = 5)
+
+library_centroid_distance_boxplot
+
+#ggsave("./06-publication/supplemental_figures/SI_Fig22D_NPost_well_preserved_total_species_dispersion_boxplot.pdf", plot = library_centroid_distance_boxplot, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+```{r}
+#dispersion
+plot(bd_strandedness)
+
+scores_df <- as.data.frame(scores(bd_strandedness)) 
+scores_df$Library <- bd_strandedness$group
+scores_df$Sequencing_ID <- rownames(scores_df)
+scores_df <- scores_df %>%
+  mutate(Library = str_replace(Library, "Double", "dsLib"),
+         Library = str_replace(Library, "Single", "ssLib")) %>%
+  inner_join(., metadata_no_rl %>%
+               select(Sequencing_ID, Individual_ID))
+
+centroids <- aggregate(cbind(sites.PCoA1, sites.PCoA2) ~ Library, data = scores_df, mean) 
+  
+dispersion_pcoa <- ggplot(scores_df, aes(x = sites.PCoA1, y = sites.PCoA2, color = Library)) +
+  geom_point(size = 3) +
+  theme_classic() +
+  labs(x = "PCoA1", y = "PCoA2") +
+  stat_ellipse(level = 0.95) +
+  scale_color_manual(values = c("dsLib" = "#04387a", "ssLib" = "#6fbfdc")) +
+  geom_point(data = centroids, size = 5, shape = 4, stroke = 1.5) +
+  geom_text_repel(aes(label = Individual_ID), size = 3) +
+  coord_equal() +
+  geom_line(aes(group = Individual_ID), linetype = "dashed", color = "#555555", linewidth = 0.2) 
+
+dispersion_pcoa
+
+#ggsave("./06-publication/supplemental_figures/SI_Fig22C_NPost_well_preserved_total_species_dispersion_pcoa.pdf", plot = dispersion_pcoa, device = "pdf", scale = 1, width = 5, height = 4, units = "in", dpi = 300)
+```
+
+
+```{r}
+#INDIVIDUAL_ID
+#make sure the grouping variable (strandedness) is aligned to the distance matrix rows
+group_individual_ID <- permanova_data_no_rl_filtered$Individual_ID
+names(group_individual_ID) <- rownames(permanova_data_no_rl_filtered)
+
+#distance matrix
+dist <- as.dist(as.matrix(permanova_dist_matrix_no_rl_filtered))
+
+#run betadisper
+bd_individual_ID <- betadisper(dist, group = group_individual_ID)
+
+#permutation test for homogeneity of dispersion
+bd_perm <- permutest(bd_individual_ID, permutations = 999)
+
+#visualize
+boxplot(bd_individual_ID, xlab = "Individual_ID", ylab = "Distance to centroid")
+
+plot(bd_individual_ID)
+```
