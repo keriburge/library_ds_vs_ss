@@ -8,7 +8,8 @@ This folder contains all results generated in this project, including processed 
 - `normalize_kraken`: Normalizing to 5 million reads (merged pairs) post read processing (using NN data as the input) and prior to taxonomic identification (NPost)
 
 ### Control and source samples:
-- `dsvss_sources_control_kraken2_gtdb207_combined_table.tsv`: Kraken2 species table for control and source samples before formatting
+- `dsvss_controls_sourcetracker_metadata.tsv`: Control and source sample metadata
 - `dsvss_sources_controls_kraken2_file_names.tsv`: List of control and source sample Kraken2 output files
+- `dsvss_sources_control_kraken2_gtdb207_combined_table.tsv`: Kraken2 species table for control and source samples before formatting
 - `dsvss_sources_controls_kraken2_gtdb207_total_species.tsv`: Kraken2 species table for control and source samples after formatting for only species-level hits
 
