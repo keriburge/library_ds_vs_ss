@@ -29,7 +29,7 @@ Folders:
 - `00-documentation`: Documentation and metadata tables for samples
 - `02-scripts`: Workflows and scripts 
 - `05-results`: Results generated in the project
-- `06-publication`: Main and supplemental figures
+- `06-publication`: Main and supplemental figures (No figures are currently in this folder, but if the repository is downloaded and scripts are run, figures will be saved to this folder)
 
 ### References
 
