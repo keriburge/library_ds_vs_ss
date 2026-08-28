@@ -2,3 +2,6 @@
 # macOS metadata
 ._*
 .DS_Store
+
+.DS_Store
+._*
