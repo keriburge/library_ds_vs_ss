@@ -31,30 +31,38 @@ No read length stratification:
 - `dsvss_npre_kraken2_gtdb207_combined_table.tsv`: NPre Kraken2 output table before formatting
 - `dsvss_npre_kraken2_output_file_names.tsv`: List of NPre Kraken2 output files
 - `dsvss_npre_kraken2_gtdb207_total_species.tsv`: NPre Kraken2 output table formatted to include only species-level hits
+- `dsvss_npre_no_rl_kraken2_gtdb207_oral_species_decontam_filtered.tsv`: Kraken2 oral species table after running decontam and filtering for low abundance species
 
 Read length stratification:
 - `dsvss_npre_read_length_subsample_kraken2_gtdb207_combined_table.tsv`: NPre with read length stratification Kraken2 output table before formatting
 - `dsvss_npre_read_length_subsampling_kraken2_output_file_names.tsv`: List of NPre read length stratification Kraken2 output files
 - `dsvss_npre_read_length_subsampling_kraken2_gtdb207_total_species.tsv`: NPre with read length stratification Kraken2 output table formatted to include only species-level hits
-- `dsvss_npre_w_read_length_kraken2_gtdb207_total_species_decontam.tsv`: Kraken2 total species for all samples (including read length stratification) after running decontam
-- `dsvss_npre_no_rl_kraken2_gtdb207_oral_species_decontam_filtered.tsv`: Kraken2 oral species table after running decontam and filtering for low abundance species
+- `dsvss_npre_w_read_length_kraken2_gtdb207_total_species_decontam.tsv`: Kraken2 with read length stratification total species for all samples (including read length stratification) after running Decontam
+- `dsvss_npre_w_read_length_kraken2_gtdb207_total_species_decontam_filtered.tsv`: NPre with read length stratification Kraken2 decontaminated species-level hits post filtering to remove spurious hits
+- `dsvss_npre_read_length_kraken2_gtdb207_oral_species.tsv`: NPre with read length stratification Kraken2 oral species table (post decontamination and filtering)
 
 ### SourceTracker
-No read length stratification:
 - `dsvss_npre_source_tracker_mappingfile_complete.tsv`: Source information per sample (required for SourceTracker input)
+No read length stratification:
 - `dsvss_npre_no_read_length_sourcetracker_input_mapping_file.tsv`: SourceTracker input mapping file with no read length subsampling
 - `dsvss_npost_no_read_length_sourcetracker_input_decontam_species_table.txt`: Sourcetracker input species table with no read length subsampling
-- `dsvss_npre_over50bp_sourcetracker_input_mapping_file.tsv`: SourceTracker input mapping file for reads over and including 50 bp
-- `dsvss_npre_over50bp_sourcetracker_input_decontam_species_table.txt`: Sourcetracker input species table for reads over and including 50 bp
-- `dsvss_npre_under50bp_sourcetracker_input_mapping_file.tsv`: SourceTracker input mapping file for reads less than 50 bp
-- `dsvss_npre_under50bp_sourcetracker_input_decontam_species_table.txt`: Sourcetracker input species table for reads less than 50 bp
-- `dsvss_npre_sourcetracker_sink_predictions.txt`: NPre sourcetracker results (no read length stratification)
+- `dsvss_npre_sourcetracker_sink_predictions.txt`: NPre SourceTracker results (no read length stratification)
 
 Read length stratification:
+- `dsvss_npre_over50bp_sourcetracker_input_mapping_file.tsv`: SourceTracker input mapping file for reads over and including 50 bp
+- `dsvss_npre_over50bp_sourcetracker_input_decontam_species_table.txt`: SourceTracker input species table for reads over and including 50 bp
+- `dsvss_npre_over50bp_sourcetracker_sink_predictions.txt`: NPre over 50 bp SourceTracker results
+- `dsvss_npre_under50bp_sourcetracker_input_mapping_file.tsv`: SourceTracker input mapping file for reads less than 50 bp
+- `dsvss_npre_under50bp_sourcetracker_input_decontam_species_table.txt`: SourceTracker input species table for reads less than 50 bp
+- `dsvss_npre_under50bp_sourcetracker_sink_predictions.txt`: NPre under 50 bp SourceTracker results
 
 ### Classified Reads
+- `dsvss_npre_classified_read_length.tsv`: NPre classified reads length distribution
+- `dsvss_npre_classified_gc.tsv`: NPre classified reads GC content distribution
 
 ### Oral Reads
+- `dsvss_npre_oral_read_length.tsv`: NPre oral reads length distribution
+- `dsvss_npre_oral_gc.tsv`: NPre oral reads GC content distribution
 
 ### Duplication
 - `dsvss_norm_eager_classified_merged_duplicated_reads.tsv`: Summary table showing how many unique classified merged reads are present at each level of duplication per library
